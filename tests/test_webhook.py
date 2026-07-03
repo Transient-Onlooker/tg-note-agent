@@ -108,6 +108,8 @@ def test_allowed_user_text_flow(tmp_path: Path, monkeypatch) -> None:
     assert messages[0]["status"] == "processed"
     assert len(notes) == 1
     assert json.loads(notes[0]["tags"]) == ["rocket", "engine", "cooling"]
+    assert notes[0]["notion_page_id"] is None
+    assert notes[0]["notion_status"] == "disabled"
     assert len(analyses) == 1
     assert len(telegram.messages) == 2
     assert telegram.messages[0]["text"] == "수신 완료."

@@ -205,8 +205,10 @@ class Database:
                     body,
                     tags,
                     confidence,
+                    notion_page_id,
+                    notion_status,
                     created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     note_id,
@@ -216,6 +218,8 @@ class Database:
                     body,
                     json.dumps(analysis.tags, ensure_ascii=False),
                     analysis.confidence,
+                    None,
+                    "disabled",
                     utcnow_iso(),
                 ),
             )
