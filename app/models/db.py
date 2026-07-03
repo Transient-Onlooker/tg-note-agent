@@ -55,6 +55,8 @@ class Database:
                     body TEXT NOT NULL,
                     tags TEXT NOT NULL,
                     confidence REAL NOT NULL,
+                    notion_page_id TEXT,
+                    notion_status TEXT,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(message_id) REFERENCES MESSAGE(id)
                 );
@@ -72,7 +74,22 @@ class Database:
                 );
                 """
             )
+            self._ensure_note_column(conn, "notion_page_id", "TEXT")
+            self._ensure_note_column(conn, "notion_status", "TEXT")
             conn.commit()
+
+    @staticmethod
+    def _ensure_note_column(
+        conn: sqlite3.Connection,
+        column_name: str,
+        column_type: str,
+    ) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(NOTE)").fetchall()
+        }
+        if column_name not in columns:
+            conn.execute(f"ALTER TABLE NOTE ADD COLUMN {column_name} {column_type}")
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -204,6 +221,24 @@ class Database:
             )
             conn.commit()
         return note_id
+
+    def update_note_notion_export(
+        self,
+        note_id: str,
+        *,
+        notion_page_id: str | None,
+        notion_status: str,
+    ) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                """
+                UPDATE NOTE
+                SET notion_page_id = ?, notion_status = ?
+                WHERE id = ?
+                """,
+                (notion_page_id, notion_status, note_id),
+            )
+            conn.commit()
 
     def fetch_all(self, table: str) -> list[dict[str, Any]]:
         with self.connection() as conn:

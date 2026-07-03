@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from app.api.health import router as health_router
 from app.api.telegram_webhook import router as telegram_router
+from app.integrations.notion import build_notion_client_from_env
 from app.integrations.telegram import TelegramClient
 from app.models.db import Database
 from app.services.nim_provider import NvidiaNIMProvider
@@ -27,13 +28,14 @@ async def lifespan(app: FastAPI):
     database = Database(sqlite_path)
     database.initialize()
 
-    note_manager = NoteManager(database)
+    notion_client = build_notion_client_from_env()
+    note_manager = NoteManager(database, notion_client=notion_client)
     nim_provider = NvidiaNIMProvider(
         api_key=get_required_env("NIM_API_KEY", "test-key"),
         base_url=get_required_env("NIM_BASE_URL", "https://integrate.api.nvidia.com/v1"),
         model=get_required_env("NIM_TEXT_MODEL", "meta/llama-3.1-70b-instruct"),
-        timeout=float(os.getenv("NIM_TIMEOUT_SECONDS", "180")),
-        max_tokens=int(os.getenv("NIM_MAX_TOKENS", "220")),
+        timeout=float(os.getenv("NIM_TIMEOUT_SECONDS", "30")),
+        max_tokens=int(os.getenv("NIM_MAX_TOKENS", "160")),
     )
     telegram_client = TelegramClient(
         bot_token=get_required_env("TELEGRAM_BOT_TOKEN", "test-token")
@@ -41,6 +43,7 @@ async def lifespan(app: FastAPI):
 
     app.state.database = database
     app.state.note_manager = note_manager
+    app.state.notion_client = notion_client
     app.state.nim_provider = nim_provider
     app.state.telegram_client = telegram_client
     app.state.update_router = build_router(note_manager, nim_provider, telegram_client)

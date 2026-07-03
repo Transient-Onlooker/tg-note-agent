@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.integrations.notion import NotionExportResult
 from app.models.db import Database
 
 
@@ -40,15 +41,33 @@ class FakeTelegramClient:
         self.messages.append({"chat_id": str(chat_id), "text": text})
 
 
-def build_client(tmp_path: Path, nim_provider) -> tuple[TestClient, Database, FakeTelegramClient]:
+class FakeNotionClient:
+    def export_note(self, *, title: str, summary: str, body: str, tags: list[str]) -> NotionExportResult:
+        return NotionExportResult(page_id="notion-page-1", url="https://notion.so/page")
+
+
+class FailingNotionClient:
+    def export_note(self, *, title: str, summary: str, body: str, tags: list[str]) -> NotionExportResult:
+        raise RuntimeError("notion failed")
+
+
+def build_client(
+    tmp_path: Path,
+    nim_provider,
+    notion_client=None,
+) -> tuple[TestClient, Database, FakeTelegramClient]:
     db = Database(str(tmp_path / "app.sqlite"))
     db.initialize()
     telegram = FakeTelegramClient()
     app = create_app()
     app.state.database = db
-    app.state.note_manager = __import__("app.services.note_manager", fromlist=["NoteManager"]).NoteManager(db)
+    app.state.note_manager = __import__("app.services.note_manager", fromlist=["NoteManager"]).NoteManager(
+        db,
+        notion_client=notion_client,
+    )
     app.state.nim_provider = nim_provider
     app.state.telegram_client = telegram
+    app.state.notion_client = notion_client
     app.state.update_router = __import__("app.services.router", fromlist=["build_router"]).build_router(
         app.state.note_manager,
         app.state.nim_provider,
@@ -168,3 +187,53 @@ def test_duplicate_message_is_ignored(tmp_path: Path, monkeypatch) -> None:
     assert second_response.json()["detail"] == "duplicate_message"
     assert len(db.fetch_all("MESSAGE")) == 1
     assert len(telegram.messages) == 2
+
+
+def test_notion_export_marks_note_and_message(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, FakeNIMProvider(), FakeNotionClient())
+
+    response = client.post(
+        "/webhook/telegram",
+        json={
+            "update_id": 1,
+            "message": {
+                "message_id": 77,
+                "chat": {"id": 777},
+                "from": {"id": 123},
+                "text": "notion export",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    notes = db.fetch_all("NOTE")
+    assert len(notes) == 1
+    assert notes[0]["notion_page_id"] == "notion-page-1"
+    assert notes[0]["notion_status"] == "exported"
+    assert "Notion: 저장함" in telegram.messages[1]["text"]
+
+
+def test_notion_export_failure_keeps_local_note(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, FakeNIMProvider(), FailingNotionClient())
+
+    response = client.post(
+        "/webhook/telegram",
+        json={
+            "update_id": 1,
+            "message": {
+                "message_id": 88,
+                "chat": {"id": 777},
+                "from": {"id": 123},
+                "text": "notion fail",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    notes = db.fetch_all("NOTE")
+    assert len(notes) == 1
+    assert notes[0]["notion_page_id"] is None
+    assert notes[0]["notion_status"] == "failed"
+    assert "Notion: 저장 실패" in telegram.messages[1]["text"]

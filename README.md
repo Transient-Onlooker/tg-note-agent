@@ -29,6 +29,8 @@ Copy `.env.example` to `.env` and set:
 - `NIM_TEXT_MODEL`
 - `NIM_TIMEOUT_SECONDS`
 - `NIM_MAX_TOKENS`
+- `NOTION_API_KEY`
+- `NOTION_NOTES_DATABASE_ID` or `NOTION_PARENT_PAGE_ID`
 - `SQLITE_PATH`
 
 ## Run

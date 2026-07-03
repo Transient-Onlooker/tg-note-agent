@@ -103,7 +103,7 @@ class UpdateRouter:
                 analysis.title,
                 analysis.confidence,
             )
-            self.note_manager.store_analysis_and_note(
+            saved_note = self.note_manager.store_analysis_and_note(
                 message_id=message_id,
                 provider_name="nvidia_nim",
                 model_name=self.nim_provider.model,
@@ -111,7 +111,12 @@ class UpdateRouter:
                 analysis=analysis,
             )
             logger.info("Stored note and AI analysis db_message_id=%s", message_id)
-            response_text = self._build_success_message(analysis.title, analysis.summary, analysis.tags)
+            response_text = self._build_success_message(
+                analysis.title,
+                analysis.summary,
+                analysis.tags,
+                saved_note.notion_status,
+            )
             self.telegram_client.send_message(chat_id, response_text)
             logger.info("Sent completion message chat_id=%s db_message_id=%s", chat_id, message_id)
         except NIMProviderError as exc:
@@ -130,14 +135,24 @@ class UpdateRouter:
             )
 
     @staticmethod
-    def _build_success_message(title: str, summary: str, tags: list[str]) -> str:
+    def _build_success_message(
+        title: str,
+        summary: str,
+        tags: list[str],
+        notion_status: str = "disabled",
+    ) -> str:
         tags_text = ", ".join(tags) if tags else "-"
-        return (
+        message = (
             "저장했어.\n\n"
             f"제목: {title}\n"
             f"태그: {tags_text}\n"
             f"요약: {summary}"
         )
+        if notion_status == "exported":
+            message += "\nNotion: 저장함"
+        elif notion_status == "failed":
+            message += "\nNotion: 저장 실패"
+        return message
 
 
 def parse_allowed_user_ids(raw_value: str | None) -> set[int]:
