@@ -1,0 +1,13 @@
+confidence:
+  auto_process_threshold: 0.85
+  review_threshold: 0.60
+
+categories:
+  note:
+    auto_save: true
+    target: sqlite
+    optional_export: notion
+
+telegram:
+  ask_when_ambiguous: true
+  send_success_summary: true
