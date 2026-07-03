@@ -1,14 +1,31 @@
 flowchart LR
-    User["사용자<br/>Telegram 앱"] --> Bot["Telegram Bot"]
+    User["User<br/>Telegram app"] --> Bot["Telegram Bot"]
     Bot -->|Webhook| Tunnel["ngrok tunnel"]
-    Tunnel --> API["FastAPI webhook"]
+    Tunnel --> API["FastAPI `/webhook/telegram`"]
 
-    API --> SQLite["SQLite<br/>MESSAGE / NOTE / AI_ANALYSIS"]
-    API --> NIMText["NVIDIA NIM LLM<br/>title / summary / tags"]
-    API --> Notion["선택: Notion API<br/>읽기용 노트 아카이브"]
+    API --> Router["UpdateRouter"]
+    Router --> Ack["Immediate ack / result reply"]
+    Router --> BG["BackgroundTasks"]
+    Router --> Archive["ImageArchive"]
+    Router --> Manager["NoteManager"]
+    Router --> DB["SQLite"]
 
-    API --> Ack["Telegram sendMessage<br/>수신 완료 / 저장 완료 / 실패"]
-    NIMText --> API
-    Notion --> API
+    BG --> NIM["NVIDIA NIM<br/>text + vision"]
+    BG --> FastTools["Fast-path tools<br/>count / search / tags / merge suggest"]
+    BG --> AgentFallback["Read-focused fallback agent"]
 
-    API --> Future["향후 확장<br/>Calendar / Todo / Image / Agent worker"]
+    Manager --> DB
+    Archive --> TGFile["Telegram file API"]
+    Archive --> DB
+    NIM --> Manager
+    NIM --> FastTools
+    NIM --> AgentFallback
+
+    DB --> Msg["MESSAGE / TELEGRAM_MESSAGE_DEDUPE"]
+    DB --> Notes["NOTE / AI_ANALYSIS"]
+    DB --> Tags["TAG / NOTE_TAG"]
+    DB --> Media["IMAGE_FILE"]
+    DB --> Merge["MERGE_PROPOSAL"]
+
+    Msg --> Context["Recent chat context<br/>same chat, last 30 min"]
+    Context --> NIM

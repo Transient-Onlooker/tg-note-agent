@@ -1,34 +1,77 @@
 sequenceDiagram
-    actor U as 사용자
-    participant T as Telegram Bot
+    actor U as User
+    participant T as Telegram
     participant N as ngrok
-    participant R as FastAPI Router
-    participant DB as SQLite
-    participant AI as NVIDIA NIM LLM
-    participant NO as Notion 선택 저장소
+    participant A as FastAPI
+    participant R as UpdateRouter
+    participant D as SQLite
+    participant M as NVIDIA NIM
 
-    U->>T: 텍스트 전송
-    T->>N: Webhook 전달
-    N->>R: POST /webhook/telegram
-    R->>DB: 중복 메시지 검사
+    U->>T: Send text or photo
+    T->>N: Webhook request
+    N->>A: POST /webhook/telegram
+    A->>R: handle_update(...)
+    R->>D: dedupe check
 
-    alt 중복 update
-        R-->>T: 200 OK only
-    else 새 메시지
-        R->>DB: 원본 MESSAGE 저장
-        R-->>T: "수신 완료."
-        R-->>T: 200 OK
+    alt duplicate update
+        R-->>A: ignored
+        A-->>T: 200 OK
+    else new update
+        R->>D: insert MESSAGE(status=received)
+        R->>T: send "수신 완료."
+        R-->>A: accepted
+        A-->>T: 200 OK
 
-        par 백그라운드 처리
-            R->>AI: 제목 / 요약 / 태그 생성 요청
-            AI-->>R: JSON 결과 반환
-            R->>DB: AI_ANALYSIS 저장
-            R->>DB: NOTE 저장
-            opt Notion 사용 시
-                R->>NO: 읽기용 노트 생성
+        par background processing
+            alt text flow
+                R->>D: read same-chat messages from last 30 min
+                R->>M: analyze_text(current text + recent context + tags + candidate notes)
+                M-->>R: route JSON
+
+                alt fast-path tool
+                    alt count/search/tag
+                        R->>D: read note data
+                        R->>D: update MESSAGE(status=processed)
+                        R-->>T: plain text answer
+                    else merge suggestion
+                        R->>D: read all notes
+                        R->>D: insert MERGE_PROPOSAL(status=proposed)
+                        R->>D: update MESSAGE(status=processed)
+                        R-->>T: keep/merge suggestion
+                    end
+                else fallback agent
+                    loop up to 4 read steps
+                        R->>M: plan_agent_step(query + recent context + tool history)
+                        M-->>R: next tool or final response
+                        alt tool step
+                            R->>D: read notes / tags / note detail
+                        else final response
+                            R->>D: update MESSAGE(status=processed)
+                            R-->>T: flexible plain text answer
+                        end
+                    end
+                else note route
+                    alt append
+                        R->>D: update NOTE + NOTE_TAG
+                    else create
+                        R->>D: insert AI_ANALYSIS + NOTE + NOTE_TAG
+                    else ignore
+                        R->>D: update MESSAGE(status=processed)
+                    end
+                    R-->>T: completion summary
+                end
+            else photo flow
+                R->>D: insert IMAGE_FILE
+                R->>M: OCR + classify image
+                alt note image
+                    R->>D: insert NOTE
+                    R-->>T: photo summary
+                else unclear image
+                    R->>D: update MESSAGE(status=needs_review)
+                    R-->>T: clarification request
+                else general photo
+                    R->>D: update MESSAGE(status=processed)
+                end
             end
-            R-->>T: "저장했어."
-        and 실패 처리
-            R-->>T: 실패 시 "메시지는 저장했지만 AI 분석에는 실패했어."
         end
     end

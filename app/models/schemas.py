@@ -13,12 +13,22 @@ class TelegramChat(BaseModel):
     id: int
 
 
+class TelegramPhotoSize(BaseModel):
+    file_id: str
+    file_unique_id: str
+    width: int
+    height: int
+    file_size: int | None = None
+
+
 class TelegramMessage(BaseModel):
     message_id: int
     date: int | None = None
     chat: TelegramChat
     from_user: TelegramUser = Field(alias="from")
     text: str | None = None
+    caption: str | None = None
+    photo: list[TelegramPhotoSize] | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -35,6 +45,26 @@ class TextAnalysisResult(BaseModel):
     category: str = "note"
     confidence: float
     raw_response: str
+    ocr_text: str | None = None
+    is_note: bool | None = None
+    needs_user_clarification: bool = False
+    action: str = "create"
+    target_note_id: str | None = None
+    tool_name: str | None = None
+    tool_query: str | None = None
+    tool_tag: str | None = None
+    tool_limit: int | None = None
+
+
+class RouteDecision(BaseModel):
+    route: str
+    confidence: float
+    target_note_id: str | None = None
+    reason: str = ""
+    tool_name: str | None = None
+    tool_query: str | None = None
+    tool_tag: str | None = None
+    tool_limit: int | None = None
 
 
 class WebhookResult(BaseModel):

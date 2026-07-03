@@ -26,9 +26,10 @@ Copy `.env.example` to `.env` and set:
 - `TELEGRAM_ALLOWED_USER_IDS`
 - `NIM_API_KEY`
 - `NIM_BASE_URL`
-- `NIM_TEXT_MODEL`
+- `NIM_TEXT_MODEL` (`minimaxai/minimax-m2.7` recommended default)
 - `NIM_TIMEOUT_SECONDS`
-- `NIM_MAX_TOKENS`
+- `NIM_MAX_TOKENS` (`900000` default fallback)
+- `NIM_VISION_MODEL`
 - `NOTION_API_KEY`
 - `NOTION_NOTES_DATABASE_ID` or `NOTION_PARENT_PAGE_ID`
 - `SQLITE_PATH`

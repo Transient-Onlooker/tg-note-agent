@@ -1,25 +1,46 @@
-flowchart LR
-    A["Telegram 텍스트"] --> B["FastAPI webhook"]
-    B --> C["MESSAGE 즉시 저장"]
-    C --> D["Telegram에 수신 완료 응답"]
-    C --> E["JOB / TASK_QUEUE 생성"]
+flowchart TD
+    In["Telegram message / photo"] --> Store["Store MESSAGE immediately"]
+    Store --> Ack["Reply: 수신 완료."]
+    Store --> Context["Load same-chat context<br/>last 30 minutes only"]
+    Context --> Decide["Hybrid routing"]
 
-    E --> F["Agent worker"]
-    F --> G["SQLite / Notion / 기존 노트 / 규칙 검색"]
-    G --> H{"어디에 넣을지 명확한가?"}
+    Decide --> Fast{"Common request?"}
+    Fast -->|Yes| FastTool["Fast-path tool route"]
+    Fast -->|No| Agent["Read-focused fallback agent"]
 
-    H -->|예| I{"대상 저장소"}
-    H -->|아니오| J["Telegram으로 확인 질문"]
-    J --> F
+    FastTool --> Count["count_notes"]
+    FastTool --> Search["search_notes"]
+    FastTool --> Tags["list_tags / notes_by_tag"]
+    FastTool --> MergeSuggest["suggest_note_merge"]
 
-    I -->|Local note| K["NOTE 저장"]
-    I -->|Readable archive| L["Notion page 생성"]
-    I -->|Calendar| M["Google Calendar"]
-    I -->|Task| N["Todo / task store"]
-    I -->|Mixed| O["여러 저장소에 반영"]
+    Agent --> Read1["search_notes / list_tags / recent_notes"]
+    Read1 --> Read2["read_note if needed"]
+    Read2 --> Respond["Final plain text response"]
 
-    K --> P["최종 결과 요약 응답"]
-    L --> P
-    M --> P
-    N --> P
-    O --> P
+    Decide --> Note{"Should save note?"}
+    Note -->|Create| Create["Create NOTE"]
+    Note -->|Append| Append["Append to existing NOTE"]
+    Note -->|Ignore| Ignore["Do not save"]
+
+    Decide --> Photo{"Photo?"}
+    Photo -->|Note image| OCR["OCR + classify + save"]
+    Photo -->|Unclear| Clarify["Ask user"]
+    Photo -->|General photo| Archive["Keep archive only"]
+
+    MergeSuggest --> Proposal["Create MERGE_PROPOSAL"]
+    Proposal --> Approve{"User approves?"}
+    Approve -->|Yes| MergeExec["Merge note and delete duplicate"]
+    Approve -->|No| Close["Close proposal"]
+
+    Count --> Done["Reply to user"]
+    Search --> Done
+    Tags --> Done
+    Respond --> Done
+    Create --> Done
+    Append --> Done
+    Ignore --> Done
+    OCR --> Done
+    Clarify --> Done
+    Archive --> Done
+    MergeExec --> Done
+    Close --> Done

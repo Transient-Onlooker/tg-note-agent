@@ -2,35 +2,29 @@
 
 Base date: `2026-07-03`
 
-This timeline is intentionally short and pragmatic. It is meant to make the next implementation steps easier to resume, not to lock the project into a rigid long-term plan.
+This is a short working roadmap for the current Telegram-first note agent.
 
 ## Delivery Phases
 
-1. `v1` stabilize the Telegram text note flow
+1. `v1` core webhook + note routing
+   Target window: `2026-07-03` to `2026-07-04`
+   Scope: immediate ack, duplicate handling, create/append/ignore
+
+2. `v1.5` note query tools
+   Target window: `2026-07-03` to `2026-07-04`
+   Scope: count/search/tag listing, Telegram plain-text answers
+
+3. `v2` image intake
    Target window: `2026-07-03` to `2026-07-05`
-   Scope: webhook stability, duplicate handling, background processing, model tuning, logging
+   Scope: photo archive, OCR, note-vs-photo classification, clarification loop
 
-2. `v1.5` add readable note output through Notion
-   Target window: `2026-07-06` to `2026-07-08`
-   Scope: optional Notion export, `notion_page_id` persistence, Telegram completion message includes Notion status
+4. `v2.1` merge workflow
+   Target window: `2026-07-03` to `2026-07-06`
+   Scope: scan all notes, propose merge, approve/cancel, delete merged note
 
-3. `v2` image note ingestion
-   Target window: `2026-07-09` to `2026-07-14`
-   Scope: Telegram image receive, local archive, hash dedupe, vision model analysis, OCR/search metadata
-
-4. `v2.5` agent-style routing
-   Target window: `2026-07-15` to `2026-07-18`
-   Scope: `JOB` queue, worker routing, clarification loop, multi-destination save logic
-
-## Immediate Priority
-
-The next engineering target should be `v1.5`, not `v2`.
-
-Reason:
-
-- It directly solves the current product gap: "stored, but visible in a readable note app"
-- It preserves the current SQLite-first architecture
-- It gives a cleaner handoff point before image ingestion and OCR complexity
+5. `v2.5` agent expansion
+   Target window: `2026-07-05` to `2026-07-08`
+   Scope: more AI-callable tools, richer multi-step routing, Notion-first sync strategy
 
 ## Mermaid
 
@@ -40,25 +34,29 @@ gantt
     dateFormat  YYYY-MM-DD
     axisFormat  %m/%d
 
-    section v1 Stabilization
+    section v1 Core
     Webhook reliability             :done, v1a, 2026-07-03, 1d
     Background processing           :done, v1b, 2026-07-03, 1d
     Duplicate update handling       :done, v1c, 2026-07-03, 1d
-    Model tuning and timeout policy :active, v1d, 2026-07-03, 3d
+    Create / append / ignore route  :done, v1d, 2026-07-03, 1d
 
-    section v1.5 Notion
-    Notion integration scaffold     :v15a, 2026-07-06, 1d
-    Notion page export              :v15b, after v15a, 1d
-    DB link and response polish     :v15c, after v15b, 1d
+    section v1.5 Query Tools
+    Count / search / tag tools      :done, v15a, 2026-07-03, 1d
+    Telegram output cleanup         :done, v15b, 2026-07-03, 1d
 
     section v2 Images
-    Telegram image ingest           :v2a, 2026-07-09, 2d
-    Local archive and dedupe        :v2b, after v2a, 2d
-    Vision analysis and OCR         :v2c, after v2b, 2d
-    Search and return flow          :v2d, after v2c, 1d
+    Telegram image ingest           :done, v2a, 2026-07-03, 1d
+    Local archive                   :done, v2b, 2026-07-03, 1d
+    OCR and image classification    :active, v2c, 2026-07-03, 2d
+    Clarification flow              :active, v2d, 2026-07-03, 2d
 
-    section v2.5 Agent Routing
-    Job queue schema                :v25a, 2026-07-15, 1d
-    Worker routing engine           :v25b, after v25a, 2d
-    Clarification loop              :v25c, after v25b, 1d
+    section v2.1 Merge Flow
+    Merge proposal tool             :active, v21a, 2026-07-03, 2d
+    Approve / cancel / delete flow  :v21b, after v21a, 1d
+    Merge summary refresh           :v21c, after v21b, 1d
+
+    section v2.5 Agent Expansion
+    More dynamic tools              :v25a, 2026-07-05, 2d
+    Multi-step agent loop           :v25b, after v25a, 2d
+    Notion sync strategy            :v25c, after v25b, 1d
 ```

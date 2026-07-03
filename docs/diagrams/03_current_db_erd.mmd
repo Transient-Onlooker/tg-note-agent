@@ -10,6 +10,13 @@ erDiagram
         datetime created_at
     }
 
+    TELEGRAM_MESSAGE_DEDUPE {
+        string chat_id PK
+        string telegram_message_id PK
+        string message_id
+        datetime created_at
+    }
+
     NOTE {
         string id PK
         string message_id FK
@@ -18,6 +25,8 @@ erDiagram
         text body
         text tags
         float confidence
+        string notion_page_id
+        string notion_status
         datetime created_at
     }
 
@@ -32,5 +41,45 @@ erDiagram
         datetime created_at
     }
 
-    MESSAGE ||--o| NOTE : creates
+    TAG {
+        string id PK
+        string name
+        string normalized_name
+        datetime created_at
+    }
+
+    NOTE_TAG {
+        string note_id PK
+        string tag_id PK
+        datetime created_at
+    }
+
+    IMAGE_FILE {
+        string id PK
+        string message_id FK
+        string telegram_file_id
+        string telegram_file_unique_id
+        string local_path
+        string mime_type
+        int file_size
+        int width
+        int height
+        datetime created_at
+    }
+
+    MERGE_PROPOSAL {
+        string id PK
+        string chat_id
+        string keep_note_id
+        string merge_note_id
+        string reason
+        string status
+        datetime created_at
+    }
+
+    MESSAGE ||--o| NOTE : creates_or_updates
     MESSAGE ||--o{ AI_ANALYSIS : analyzed_by
+    MESSAGE ||--o{ IMAGE_FILE : archives
+    NOTE ||--o{ NOTE_TAG : has
+    TAG ||--o{ NOTE_TAG : labels
+    NOTE ||--o{ MERGE_PROPOSAL : merge_target
