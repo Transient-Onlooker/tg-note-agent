@@ -20,6 +20,13 @@ class NoteManager:
     def store_message(self, message: StoredMessage) -> str:
         return self.db.insert_message(message)
 
+    def find_existing_message(
+        self,
+        chat_id: str,
+        telegram_message_id: str,
+    ) -> dict | None:
+        return self.db.find_message_by_telegram_ids(chat_id, telegram_message_id)
+
     def store_analysis_and_note(
         self,
         message_id: str,

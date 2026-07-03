@@ -1,0 +1,25 @@
+flowchart LR
+    A["Telegram 텍스트"] --> B["FastAPI webhook"]
+    B --> C["MESSAGE 즉시 저장"]
+    C --> D["Telegram에 수신 완료 응답"]
+    C --> E["JOB / TASK_QUEUE 생성"]
+
+    E --> F["Agent worker"]
+    F --> G["SQLite / Notion / 기존 노트 / 규칙 검색"]
+    G --> H{"어디에 넣을지 명확한가?"}
+
+    H -->|예| I{"대상 저장소"}
+    H -->|아니오| J["Telegram으로 확인 질문"]
+    J --> F
+
+    I -->|Local note| K["NOTE 저장"]
+    I -->|Readable archive| L["Notion page 생성"]
+    I -->|Calendar| M["Google Calendar"]
+    I -->|Task| N["Todo / task store"]
+    I -->|Mixed| O["여러 저장소에 반영"]
+
+    K --> P["최종 결과 요약 응답"]
+    L --> P
+    M --> P
+    N --> P
+    O --> P

@@ -10,6 +10,14 @@ Telegram webhook based personal note agent.
 - Save `NOTE` and `AI_ANALYSIS`
 - Reply to Telegram with a short summary
 
+## Architecture
+
+Current implementation and next target diagrams:
+
+- `docs/ARCHITECTURE.md`
+- `docs/ROADMAP.md`
+- `docs/diagrams/README.md`
+
 ## Environment
 
 Copy `.env.example` to `.env` and set:
@@ -19,6 +27,8 @@ Copy `.env.example` to `.env` and set:
 - `NIM_API_KEY`
 - `NIM_BASE_URL`
 - `NIM_TEXT_MODEL`
+- `NIM_TIMEOUT_SECONDS`
+- `NIM_MAX_TOKENS`
 - `SQLITE_PATH`
 
 ## Run

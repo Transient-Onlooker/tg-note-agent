@@ -1,0 +1,34 @@
+sequenceDiagram
+    actor U as 사용자
+    participant T as Telegram Bot
+    participant N as ngrok
+    participant R as FastAPI Router
+    participant DB as SQLite
+    participant AI as NVIDIA NIM LLM
+    participant NO as Notion 선택 저장소
+
+    U->>T: 텍스트 전송
+    T->>N: Webhook 전달
+    N->>R: POST /webhook/telegram
+    R->>DB: 중복 메시지 검사
+
+    alt 중복 update
+        R-->>T: 200 OK only
+    else 새 메시지
+        R->>DB: 원본 MESSAGE 저장
+        R-->>T: "수신 완료."
+        R-->>T: 200 OK
+
+        par 백그라운드 처리
+            R->>AI: 제목 / 요약 / 태그 생성 요청
+            AI-->>R: JSON 결과 반환
+            R->>DB: AI_ANALYSIS 저장
+            R->>DB: NOTE 저장
+            opt Notion 사용 시
+                R->>NO: 읽기용 노트 생성
+            end
+            R-->>T: "저장했어."
+        and 실패 처리
+            R-->>T: 실패 시 "메시지는 저장했지만 AI 분석에는 실패했어."
+        end
+    end

@@ -80,7 +80,7 @@ def test_allowed_user_text_flow(tmp_path: Path, monkeypatch) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "processed"
+    assert response.json()["status"] == "accepted"
 
     messages = db.fetch_all("MESSAGE")
     notes = db.fetch_all("NOTE")
@@ -90,8 +90,9 @@ def test_allowed_user_text_flow(tmp_path: Path, monkeypatch) -> None:
     assert len(notes) == 1
     assert json.loads(notes[0]["tags"]) == ["rocket", "engine", "cooling"]
     assert len(analyses) == 1
-    assert len(telegram.messages) == 1
-    assert "저장했어." in telegram.messages[0]["text"]
+    assert len(telegram.messages) == 2
+    assert telegram.messages[0]["text"] == "수신 완료."
+    assert "저장했어." in telegram.messages[1]["text"]
 
 
 def test_unauthorized_user_is_ignored(tmp_path: Path, monkeypatch) -> None:
@@ -135,9 +136,35 @@ def test_ai_failure_marks_message_status(tmp_path: Path, monkeypatch) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "accepted_with_ai_failure"
+    assert response.json()["status"] == "accepted"
     messages = db.fetch_all("MESSAGE")
     assert len(messages) == 1
     assert messages[0]["status"] == "ai_failed"
-    assert len(telegram.messages) == 1
-    assert "AI 분석에는 실패" in telegram.messages[0]["text"]
+    assert len(telegram.messages) == 2
+    assert telegram.messages[0]["text"] == "수신 완료."
+    assert "AI 분석에는 실패" in telegram.messages[1]["text"]
+
+
+def test_duplicate_message_is_ignored(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, FakeNIMProvider())
+    payload = {
+        "update_id": 1,
+        "message": {
+            "message_id": 55,
+            "chat": {"id": 777},
+            "from": {"id": 123},
+            "text": "duplicate",
+        },
+    }
+
+    first_response = client.post("/webhook/telegram", json=payload)
+    second_response = client.post("/webhook/telegram", json=payload)
+
+    assert first_response.status_code == 200
+    assert first_response.json()["status"] == "accepted"
+    assert second_response.status_code == 200
+    assert second_response.json()["status"] == "ignored"
+    assert second_response.json()["detail"] == "duplicate_message"
+    assert len(db.fetch_all("MESSAGE")) == 1
+    assert len(telegram.messages) == 2

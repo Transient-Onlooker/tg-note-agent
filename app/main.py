@@ -32,6 +32,8 @@ async def lifespan(app: FastAPI):
         api_key=get_required_env("NIM_API_KEY", "test-key"),
         base_url=get_required_env("NIM_BASE_URL", "https://integrate.api.nvidia.com/v1"),
         model=get_required_env("NIM_TEXT_MODEL", "meta/llama-3.1-70b-instruct"),
+        timeout=float(os.getenv("NIM_TIMEOUT_SECONDS", "180")),
+        max_tokens=int(os.getenv("NIM_MAX_TOKENS", "220")),
     )
     telegram_client = TelegramClient(
         bot_token=get_required_env("TELEGRAM_BOT_TOKEN", "test-token")

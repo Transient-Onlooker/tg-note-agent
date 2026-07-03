@@ -1,0 +1,14 @@
+flowchart LR
+    User["사용자<br/>Telegram 앱"] --> Bot["Telegram Bot"]
+    Bot -->|Webhook| Tunnel["ngrok tunnel"]
+    Tunnel --> API["FastAPI webhook"]
+
+    API --> SQLite["SQLite<br/>MESSAGE / NOTE / AI_ANALYSIS"]
+    API --> NIMText["NVIDIA NIM LLM<br/>title / summary / tags"]
+    API --> Notion["선택: Notion API<br/>읽기용 노트 아카이브"]
+
+    API --> Ack["Telegram sendMessage<br/>수신 완료 / 저장 완료 / 실패"]
+    NIMText --> API
+    Notion --> API
+
+    API --> Future["향후 확장<br/>Calendar / Todo / Image / Agent worker"]

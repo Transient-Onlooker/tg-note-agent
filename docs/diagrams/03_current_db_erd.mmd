@@ -1,0 +1,36 @@
+erDiagram
+    MESSAGE {
+        string id PK
+        string telegram_message_id
+        string chat_id
+        string sender_id
+        text raw_text
+        string content_type
+        string status
+        datetime created_at
+    }
+
+    NOTE {
+        string id PK
+        string message_id FK
+        string title
+        text summary
+        text body
+        text tags
+        float confidence
+        datetime created_at
+    }
+
+    AI_ANALYSIS {
+        string id PK
+        string message_id FK
+        string provider
+        string model
+        string category
+        text raw_response
+        float confidence
+        datetime created_at
+    }
+
+    MESSAGE ||--o| NOTE : creates
+    MESSAGE ||--o{ AI_ANALYSIS : analyzed_by

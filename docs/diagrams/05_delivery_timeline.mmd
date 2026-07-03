@@ -1,0 +1,26 @@
+gantt
+    title tg-note-agent short roadmap
+    dateFormat  YYYY-MM-DD
+    axisFormat  %m/%d
+
+    section v1 Stabilization
+    Webhook reliability             :done, v1a, 2026-07-03, 1d
+    Background processing           :done, v1b, 2026-07-03, 1d
+    Duplicate update handling       :done, v1c, 2026-07-03, 1d
+    Model tuning and timeout policy :active, v1d, 2026-07-03, 3d
+
+    section v1.5 Notion
+    Notion integration scaffold     :v15a, 2026-07-06, 1d
+    Notion page export              :v15b, after v15a, 1d
+    DB link and response polish     :v15c, after v15b, 1d
+
+    section v2 Images
+    Telegram image ingest           :v2a, 2026-07-09, 2d
+    Local archive and dedupe        :v2b, after v2a, 2d
+    Vision analysis and OCR         :v2c, after v2b, 2d
+    Search and return flow          :v2d, after v2c, 1d
+
+    section v2.5 Agent Routing
+    Job queue schema                :v25a, 2026-07-15, 1d
+    Worker routing engine           :v25b, after v25a, 2d
+    Clarification loop              :v25c, after v25b, 1d

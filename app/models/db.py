@@ -113,6 +113,24 @@ class Database:
             conn.commit()
         return message.id
 
+    def find_message_by_telegram_ids(
+        self,
+        chat_id: str,
+        telegram_message_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM MESSAGE
+                WHERE chat_id = ? AND telegram_message_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (chat_id, telegram_message_id),
+            ).fetchone()
+        return dict(row) if row else None
+
     def update_message_status(self, message_id: str, status: str) -> None:
         with self.connection() as conn:
             conn.execute(
