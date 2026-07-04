@@ -36,6 +36,9 @@ class NoteManager:
     ) -> dict | None:
         return self.db.find_message_by_telegram_ids(chat_id, telegram_message_id)
 
+    def get_message(self, message_id: str) -> dict | None:
+        return self.db.get_message(message_id)
+
     def find_pending_photo_review(self, chat_id: str) -> dict | None:
         return self.db.find_latest_message(
             chat_id=chat_id,
@@ -102,6 +105,104 @@ class NoteManager:
 
     def get_note(self, note_id: str) -> dict | None:
         return self.db.get_note(note_id)
+
+    def get_note_with_source(self, note_id: str) -> dict | None:
+        return self.db.get_note_with_source(note_id)
+
+    def get_note_any_status(self, note_id: str) -> dict | None:
+        return self.db.get_note_any_status(note_id)
+
+    def get_note_by_message_id(self, message_id: str) -> dict | None:
+        return self.db.get_note_by_message_id(message_id)
+
+    def get_last_note_for_chat(
+        self,
+        chat_id: str,
+        *,
+        prefer_image: bool = True,
+        within_minutes: int = 30,
+    ) -> dict | None:
+        return self.db.get_last_note_for_chat(
+            chat_id=chat_id,
+            prefer_image=prefer_image,
+            within_minutes=within_minutes,
+        )
+
+    def update_image_analysis(
+        self,
+        image_id: str,
+        *,
+        ocr_text: str | None,
+        summary: str | None,
+        image_type: str | None,
+        confidence: float | None,
+    ) -> None:
+        self.db.update_image_analysis(
+            image_id,
+            ocr_text=ocr_text,
+            summary=summary,
+            image_type=image_type,
+            confidence=confidence,
+        )
+
+    def set_conversation_state(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        key: str,
+        value,
+    ) -> None:
+        self.db.set_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key=key,
+            value=value,
+        )
+
+    def get_conversation_state(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        key: str,
+        max_age_minutes: int | None = 30,
+    ):
+        return self.db.get_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key=key,
+            max_age_minutes=max_age_minutes,
+        )
+
+    def clear_conversation_state(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        key: str,
+    ) -> None:
+        self.db.clear_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key=key,
+        )
+
+    def replace_note_body(
+        self,
+        *,
+        note_id: str,
+        new_body: str,
+        reason: str | None = None,
+    ) -> dict | None:
+        return self.db.replace_note_body(
+            note_id=note_id,
+            new_body=new_body,
+            reason=reason,
+        )
+
+    def delete_note(self, note_id: str, *, reason: str | None = None) -> None:
+        self.db.delete_note(note_id, reason=reason)
 
     def store_analysis_and_note(
         self,
@@ -183,6 +284,12 @@ class NoteManager:
 
     def mark_needs_review(self, message_id: str) -> None:
         self.db.update_message_status(message_id, "needs_review")
+
+    def mark_action_failed(self, message_id: str) -> None:
+        self.db.update_message_status(message_id, "action_failed")
+
+    def mark_reply_failed(self, message_id: str) -> None:
+        self.db.update_message_status(message_id, "reply_failed")
 
     def merge_notes(
         self,

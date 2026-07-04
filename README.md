@@ -2,13 +2,21 @@
 
 Telegram webhook based personal note agent.
 
-## v1 scope
+## Current scope
 
 - Accept Telegram text updates through `/webhook/telegram`
 - Save raw messages to SQLite
-- Analyze note text with NVIDIA NIM
-- Save `NOTE` and `AI_ANALYSIS`
-- Reply to Telegram with a short summary
+- Treat Telegram outbound replies as best-effort so `sendMessage` timeout does not cause webhook 500
+- Run deterministic command gate before AI routing for read/search/recent/count/correction/delete/numbered references
+- Save `NOTE`, `AI_ANALYSIS`, `IMAGE_FILE`, `CONVERSATION_STATE`, and `NOTE_REVISION`
+- Sync OCR correction into both `NOTE.body` and `IMAGE_FILE.ocr_text`
+- Use NVIDIA NIM only after command-gate miss for save/append/tool/fallback workflows
+
+## Known Risks
+
+- OCR quality still depends on the selected vision model and image clarity.
+- Notion sync is optional and still secondary to local SQLite storage.
+- Long multi-step agent behavior is intentionally bounded; deterministic commands should stay in the command gate.
 
 ## Architecture
 

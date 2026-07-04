@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramClient:
@@ -9,13 +13,23 @@ class TelegramClient:
         self.timeout = timeout
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
 
-    def send_message(self, chat_id: int | str, text: str) -> None:
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(
-                f"{self.base_url}/sendMessage",
-                json={"chat_id": str(chat_id), "text": text},
+    def send_message(self, chat_id: int | str, text: str) -> bool:
+        timeout = httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=3.0)
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                response = client.post(
+                    f"{self.base_url}/sendMessage",
+                    json={"chat_id": str(chat_id), "text": text},
+                )
+                response.raise_for_status()
+        except (httpx.TimeoutException, httpx.HTTPError) as exc:
+            logger.warning(
+                "Failed to send Telegram message chat_id=%s error=%s",
+                chat_id,
+                exc,
             )
-            response.raise_for_status()
+            return False
+        return True
 
     def get_file_path(self, file_id: str) -> str:
         with httpx.Client(timeout=self.timeout) as client:

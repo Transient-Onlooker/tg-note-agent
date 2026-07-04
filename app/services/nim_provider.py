@@ -258,9 +258,13 @@ class NvidiaNIMProvider:
                         "Return strict JSON with keys "
                         "title, summary, tags, category, confidence, ocr_text, is_note, needs_user_clarification. "
                         "Use category values note, general_photo, or unsure. "
+                        "Extract image text as faithfully as possible into ocr_text before summarizing it. "
+                        "Do not translate Korean into English. "
+                        "title and summary must be written in Korean. "
                         "Set is_note true only when the image is clearly a note, document, whiteboard, screenshot, or text-heavy memo. "
                         "Set needs_user_clarification true when text is unreadable or intent is ambiguous. "
-                        "ocr_text should contain readable Korean text from the image, or an empty string if none is readable. "
+                        "ocr_text should contain the original readable text from the image, or an empty string if none is readable. "
+                        "If any part is hard to read, preserve what is readable and mark uncertain fragments briefly. "
                         "Do not include markdown or extra text."
                     ),
                 },

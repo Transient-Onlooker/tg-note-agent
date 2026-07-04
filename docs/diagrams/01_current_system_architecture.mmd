@@ -4,14 +4,18 @@ flowchart LR
     Tunnel --> API["FastAPI `/webhook/telegram`"]
 
     API --> Router["UpdateRouter"]
-    Router --> Ack["Immediate ack / result reply"]
+    Router --> Ack["Best-effort outbound<br/>ack + result replies"]
+    Ack -->|sendMessage fails| ReplyFailed["Log warning<br/>MESSAGE.status=reply_failed for result replies"]
     Router --> BG["BackgroundTasks"]
+    Router --> Gate["Deterministic command gate<br/>read / search / recent / count<br/>correction / delete / numbered reference"]
     Router --> Archive["ImageArchive"]
     Router --> Manager["NoteManager"]
     Router --> DB["SQLite"]
 
-    BG --> NIM["NVIDIA NIM<br/>text + vision"]
-    BG --> FastTools["Fast-path tools<br/>count / search / tags / merge suggest"]
+    Gate --> State["CONVERSATION_STATE<br/>last_list_results / last_search_results<br/>last_selected_note_id / last_image_note_id<br/>pending_delete_note_id"]
+    Gate --> Revisions["NOTE_REVISION<br/>correction history"]
+    BG --> NIM["NVIDIA NIM<br/>router + text + vision"]
+    BG --> FastTools["AI tools after gate miss<br/>tags / merge / fallback reads"]
     BG --> AgentFallback["Read-focused fallback agent"]
 
     Manager --> DB
@@ -22,10 +26,10 @@ flowchart LR
     NIM --> AgentFallback
 
     DB --> Msg["MESSAGE / TELEGRAM_MESSAGE_DEDUPE"]
-    DB --> Notes["NOTE / AI_ANALYSIS"]
+    DB --> Notes["NOTE / AI_ANALYSIS<br/>soft delete fields"]
     DB --> Tags["TAG / NOTE_TAG"]
-    DB --> Media["IMAGE_FILE"]
+    DB --> Media["IMAGE_FILE<br/>ocr_text / summary / image_type / confidence"]
     DB --> Merge["MERGE_PROPOSAL"]
 
-    Msg --> Context["Recent chat context<br/>same chat, last 30 min"]
+    Msg --> Context["Recent same-chat context<br/>last 30 min"]
     Context --> NIM

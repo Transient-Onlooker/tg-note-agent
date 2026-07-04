@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
 from fastapi.testclient import TestClient
 
 from app.integrations.notion import NotionExportResult
@@ -100,6 +101,17 @@ class FailingNIMProvider(FakeNIMProvider):
         from app.services.nim_provider import NIMProviderError
 
         raise NIMProviderError("nim failed")
+
+
+class FastPathForbiddenNIMProvider(FakeNIMProvider):
+    def route_text(self, text: str, **kwargs):
+        raise AssertionError("fast read path should not call route_text")
+
+    def analyze_text(self, text: str, **kwargs):
+        raise AssertionError("fast read path should not call analyze_text")
+
+    def plan_agent_step(self, *, query: str, tool_history: list[dict], conversation_context=None):
+        raise AssertionError("fast read path should not call plan_agent_step")
 
 
 class IgnoreTextNIMProvider(FakeNIMProvider):
@@ -349,6 +361,11 @@ class FakeTelegramClient:
         return b"fake-image-bytes"
 
 
+class TimeoutTelegramClient(FakeTelegramClient):
+    def send_message(self, chat_id: int | str, text: str) -> None:
+        raise httpx.ConnectTimeout("telegram sendMessage timed out")
+
+
 class FakeNotionClient:
     def export_note(self, *, title: str, summary: str, body: str, tags: list[str]) -> NotionExportResult:
         return NotionExportResult(page_id="notion-page-1", url="https://notion.so/page")
@@ -494,6 +511,11 @@ def test_allowed_user_text_flow(tmp_path: Path, monkeypatch) -> None:
     assert len(db.fetch_all("AI_ANALYSIS")) == 1
     assert [message["text"] for message in telegram.messages] == [
         "수신 완료.",
+        "메모로 저장했어.\n\n요약: 연소실 벽면 냉각 방식 조사 메모",
+    ]
+    return
+    assert [message["text"] for message in telegram.messages] == [
+        "수신 완료.",
         "처리 완료.\n\n요약: 연소실 벽면 냉각 방식 조사 메모",
     ]
 
@@ -634,7 +656,7 @@ def test_recent_notes_tool_returns_recent_summaries(tmp_path: Path, monkeypatch)
     )
 
     assert response.status_code == 200
-    assert telegram.messages[1]["text"].startswith("최근 메모 3개야.")
+    assert telegram.messages[1]["text"].startswith("최근 저장된 항목 3개야.")
     assert "메모 제목 2" in telegram.messages[1]["text"]
 
 
@@ -767,7 +789,11 @@ def test_note_search_query_searches_existing_notes_without_creating_note(tmp_pat
     assert messages[1]["status"] == "processed"
     assert len(db.fetch_all("NOTE")) == 1
     assert telegram.messages[0]["text"] == "수신 완료."
-    assert telegram.messages[1]["text"] == "관련 메모를 찾았어: 지구과학 문제지 제작 계획"
+    assert telegram.messages[1]["text"] == (
+        "관련 메모 1개를 찾았어.\n"
+        "1. 지구과학 문제지 제작 계획\n"
+        "기말고사 이후 지구과학 문제지를 제작하는 계획"
+    )
 
 
 def test_note_search_markdown_table_is_converted_to_plain_text(tmp_path: Path, monkeypatch) -> None:
@@ -809,7 +835,7 @@ def test_note_search_markdown_table_is_converted_to_plain_text(tmp_path: Path, m
 
     assert response.status_code == 200
     assert "|" not in telegram.messages[1]["text"]
-    assert telegram.messages[1]["text"].startswith("관련 메모 1개 찾았어.")
+    assert telegram.messages[1]["text"].startswith("관련 메모 1개를 찾았어.")
 
 
 def test_agent_fallback_query_can_read_notes_and_answer(tmp_path: Path, monkeypatch) -> None:
@@ -874,7 +900,9 @@ def test_agent_fallback_query_can_read_notes_and_answer(tmp_path: Path, monkeypa
     assert response.json()["status"] == "accepted"
     assert db.fetch_all("MESSAGE")[-1]["status"] == "processed"
     assert len(db.fetch_all("NOTE")) == 2
-    assert "지구과학 관련 메모는 2개야" in telegram.messages[-1]["text"]
+    assert "관련 메모 2개를 찾았어." in telegram.messages[-1]["text"]
+    assert "지구과학 시험 범위 정리" in telegram.messages[-1]["text"]
+    assert "지구과학 문제지 제작 계획" in telegram.messages[-1]["text"]
 
 
 def test_recent_chat_context_is_passed_to_analysis(tmp_path: Path, monkeypatch) -> None:
@@ -1155,9 +1183,12 @@ def test_merge_proposal_approval_merges_and_deletes_note(tmp_path: Path, monkeyp
 
     assert response.status_code == 200
     notes = db.fetch_all("NOTE")
-    assert len(notes) == 1
-    assert "지구과학 시험지 제작 계획" in notes[0]["body"]
-    assert "지구과학 시험 범위 정리" in notes[0]["body"]
+    active_notes = [note for note in notes if note["deleted_at"] is None]
+    deleted_notes = [note for note in notes if note["deleted_at"] is not None]
+    assert len(active_notes) == 1
+    assert len(deleted_notes) == 1
+    assert "지구과학 시험지 제작 계획" in active_notes[0]["body"]
+    assert "지구과학 시험 범위 정리" in active_notes[0]["body"]
     assert db.fetch_all("MERGE_PROPOSAL")[0]["status"] == "approved"
     assert "병합 완료" in telegram.messages[-1]["text"]
 
@@ -1363,6 +1394,10 @@ def test_photo_flow_runs_ocr_and_creates_note(tmp_path: Path, monkeypatch) -> No
     assert response.status_code == 200
     assert response.json()["status"] == "accepted"
     assert db.fetch_all("MESSAGE")[0]["status"] == "processed"
+    image_files = db.fetch_all("IMAGE_FILE")
+    assert image_files[0]["ocr_text"] == "지구과학 시험지 제작 기말고사 끝나고 하기"
+    assert image_files[0]["summary"] == "기말고사 이후 지구과학 문제지를 제작하는 계획"
+    assert image_files[0]["image_type"] == "note"
     assert len(db.fetch_all("IMAGE_FILE")) == 1
     notes = db.fetch_all("NOTE")
     assert len(notes) == 1
@@ -1370,6 +1405,93 @@ def test_photo_flow_runs_ocr_and_creates_note(tmp_path: Path, monkeypatch) -> No
     assert telegram.messages[0]["text"] == "사진 수신 완료."
     assert "사진 메모로 저장했어." in telegram.messages[1]["text"]
     assert "요약: 기말고사 이후 지구과학 문제지를 제작하는 계획" in telegram.messages[1]["text"]
+
+
+def test_photo_success_message_includes_ocr_text(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, FakeNIMProvider())
+
+    response = client.post(
+        "/webhook/telegram",
+        json={
+            "update_id": 21,
+            "message": {
+                "message_id": 109,
+                "chat": {"id": 777},
+                "from": {"id": 123},
+                "photo": [
+                    {
+                        "file_id": "large-file",
+                        "file_unique_id": "unique-large-2",
+                        "width": 1200,
+                        "height": 900,
+                        "file_size": 6000,
+                    },
+                ],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert "읽은 내용:" in telegram.messages[1]["text"]
+    assert "지구과학 시험지 제작 기말고사 끝나고 하기" in telegram.messages[1]["text"]
+
+
+def test_fast_read_last_note_returns_saved_ocr_without_llm(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, FakeNIMProvider())
+
+    photo_response = client.post(
+        "/webhook/telegram",
+        json={
+            "update_id": 22,
+            "message": {
+                "message_id": 110,
+                "chat": {"id": 777},
+                "from": {"id": 123},
+                "photo": [
+                    {
+                        "file_id": "large-file",
+                        "file_unique_id": "unique-large-3",
+                        "width": 1000,
+                        "height": 800,
+                        "file_size": 5000,
+                    },
+                ],
+            },
+        },
+    )
+
+    assert photo_response.status_code == 200
+    assert len(db.fetch_all("NOTE")) == 1
+    assert len(db.fetch_all("AI_ANALYSIS")) == 1
+
+    fast_provider = FastPathForbiddenNIMProvider()
+    client.app.state.nim_provider = fast_provider
+    client.app.state.update_router.nim_provider = fast_provider
+
+    query_response = client.post(
+        "/webhook/telegram",
+        json={
+            "update_id": 23,
+            "message": {
+                "message_id": 111,
+                "chat": {"id": 777},
+                "from": {"id": 123},
+                "text": "저 메모의 전체 내용 알려줘.",
+            },
+        },
+    )
+
+    assert query_response.status_code == 200
+    assert query_response.json()["status"] == "accepted"
+    assert len(db.fetch_all("NOTE")) == 1
+    assert len(db.fetch_all("AI_ANALYSIS")) == 1
+    assert db.fetch_all("MESSAGE")[-1]["status"] == "processed"
+    assert telegram.messages[2]["text"] == "수신 완료."
+    assert "방금 OCR로 저장된 메모" in telegram.messages[3]["text"]
+    assert "[본문]" in telegram.messages[3]["text"]
+    assert "지구과학 시험지 제작 기말고사 끝나고 하기" in telegram.messages[3]["text"]
 
 
 def test_unclear_photo_asks_for_clarification(tmp_path: Path, monkeypatch) -> None:

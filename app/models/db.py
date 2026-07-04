@@ -62,6 +62,8 @@ class Database:
                     confidence REAL NOT NULL,
                     notion_page_id TEXT,
                     notion_status TEXT,
+                    deleted_at TEXT,
+                    deleted_reason TEXT,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(message_id) REFERENCES MESSAGE(id)
                 );
@@ -88,6 +90,10 @@ class Database:
                     file_size INTEGER,
                     width INTEGER,
                     height INTEGER,
+                    ocr_text TEXT,
+                    summary TEXT,
+                    image_type TEXT,
+                    confidence REAL,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(message_id) REFERENCES MESSAGE(id)
                 );
@@ -125,10 +131,35 @@ class Database:
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS CONVERSATION_STATE (
+                    chat_id TEXT NOT NULL,
+                    sender_id TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(chat_id, sender_id, key)
+                );
+
+                CREATE TABLE IF NOT EXISTS NOTE_REVISION (
+                    id TEXT PRIMARY KEY,
+                    note_id TEXT NOT NULL,
+                    previous_body TEXT NOT NULL,
+                    new_body TEXT NOT NULL,
+                    reason TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(note_id) REFERENCES NOTE(id)
+                );
                 """
             )
             self._ensure_note_column(conn, "notion_page_id", "TEXT")
             self._ensure_note_column(conn, "notion_status", "TEXT")
+            self._ensure_note_column(conn, "deleted_at", "TEXT")
+            self._ensure_note_column(conn, "deleted_reason", "TEXT")
+            self._ensure_image_column(conn, "ocr_text", "TEXT")
+            self._ensure_image_column(conn, "summary", "TEXT")
+            self._ensure_image_column(conn, "image_type", "TEXT")
+            self._ensure_image_column(conn, "confidence", "REAL")
             self._backfill_tag_registry(conn)
             conn.commit()
 
@@ -144,6 +175,19 @@ class Database:
         }
         if column_name not in columns:
             conn.execute(f"ALTER TABLE NOTE ADD COLUMN {column_name} {column_type}")
+
+    @staticmethod
+    def _ensure_image_column(
+        conn: sqlite3.Connection,
+        column_name: str,
+        column_type: str,
+    ) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(IMAGE_FILE)").fetchall()
+        }
+        if column_name not in columns:
+            conn.execute(f"ALTER TABLE IMAGE_FILE ADD COLUMN {column_name} {column_type}")
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -249,6 +293,14 @@ class Database:
         query += " ORDER BY created_at DESC LIMIT 1"
         with self.connection() as conn:
             row = conn.execute(query, tuple(params)).fetchone()
+        return dict(row) if row else None
+
+    def get_message(self, message_id: str) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM MESSAGE WHERE id = ?",
+                (message_id,),
+            ).fetchone()
         return dict(row) if row else None
 
     def recent_chat_messages(
@@ -407,11 +459,7 @@ class Database:
             conn.commit()
 
     def search_notes(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
-        terms = [
-            term
-            for term in re.split(r"\s+", query.strip())
-            if len(term) >= 2
-        ]
+        terms = self._expand_search_terms(query)
         if not terms:
             return []
 
@@ -437,7 +485,8 @@ class Database:
                 f"""
                 SELECT *
                 FROM NOTE
-                WHERE {' OR '.join(where_parts)}
+                WHERE deleted_at IS NULL
+                  AND ({' OR '.join(where_parts)})
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
@@ -448,16 +497,115 @@ class Database:
     def get_note(self, note_id: str) -> dict[str, Any] | None:
         with self.connection() as conn:
             row = conn.execute(
+                "SELECT * FROM NOTE WHERE id = ? AND deleted_at IS NULL",
+                (note_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_note_any_status(self, note_id: str) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            row = conn.execute(
                 "SELECT * FROM NOTE WHERE id = ?",
                 (note_id,),
             ).fetchone()
         return dict(row) if row else None
 
-    def delete_note(self, note_id: str) -> None:
+    def get_note_by_message_id(self, message_id: str) -> dict[str, Any] | None:
         with self.connection() as conn:
-            conn.execute("DELETE FROM NOTE_TAG WHERE note_id = ?", (note_id,))
-            conn.execute("DELETE FROM NOTE WHERE id = ?", (note_id,))
-            conn.execute("DELETE FROM TAG WHERE id NOT IN (SELECT DISTINCT tag_id FROM NOTE_TAG)")
+            row = conn.execute(
+                """
+                SELECT *
+                FROM NOTE
+                WHERE message_id = ?
+                  AND deleted_at IS NULL
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (message_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_note_with_source(self, note_id: str) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    NOTE.*,
+                    MESSAGE.chat_id AS source_chat_id,
+                    MESSAGE.sender_id AS source_sender_id,
+                    MESSAGE.content_type AS source_content_type,
+                    MESSAGE.created_at AS source_message_created_at,
+                    IMAGE_FILE.id AS image_id,
+                    IMAGE_FILE.ocr_text AS image_ocr_text,
+                    IMAGE_FILE.summary AS image_summary,
+                    IMAGE_FILE.image_type AS image_type,
+                    IMAGE_FILE.confidence AS image_confidence
+                FROM NOTE
+                JOIN MESSAGE ON MESSAGE.id = NOTE.message_id
+                LEFT JOIN IMAGE_FILE ON IMAGE_FILE.message_id = MESSAGE.id
+                WHERE NOTE.id = ?
+                  AND NOTE.deleted_at IS NULL
+                LIMIT 1
+                """,
+                (note_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_last_note_for_chat(
+        self,
+        *,
+        chat_id: str,
+        prefer_image: bool = True,
+        within_minutes: int = 30,
+    ) -> dict[str, Any] | None:
+        cutoff = (datetime.now(UTC) - timedelta(minutes=within_minutes)).isoformat()
+
+        def fetch_for_content_type(content_type: str | None) -> dict[str, Any] | None:
+            query = """
+                SELECT
+                    NOTE.*,
+                    MESSAGE.chat_id AS source_chat_id,
+                    MESSAGE.content_type AS source_content_type,
+                    MESSAGE.created_at AS source_message_created_at,
+                    IMAGE_FILE.ocr_text AS image_ocr_text,
+                    IMAGE_FILE.summary AS image_summary,
+                    IMAGE_FILE.image_type AS image_type,
+                    IMAGE_FILE.confidence AS image_confidence
+                FROM NOTE
+                JOIN MESSAGE
+                    ON MESSAGE.id = NOTE.message_id
+                LEFT JOIN IMAGE_FILE
+                    ON IMAGE_FILE.message_id = MESSAGE.id
+                WHERE MESSAGE.chat_id = ?
+                  AND MESSAGE.created_at >= ?
+                  AND NOTE.deleted_at IS NULL
+            """
+            params: list[Any] = [chat_id, cutoff]
+            if content_type is not None:
+                query += " AND MESSAGE.content_type = ?"
+                params.append(content_type)
+            query += " ORDER BY NOTE.created_at DESC LIMIT 1"
+
+            with self.connection() as conn:
+                row = conn.execute(query, tuple(params)).fetchone()
+            return dict(row) if row else None
+
+        if prefer_image:
+            image_note = fetch_for_content_type("photo")
+            if image_note is not None:
+                return image_note
+        return fetch_for_content_type(None)
+
+    def delete_note(self, note_id: str, *, reason: str | None = None) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                """
+                UPDATE NOTE
+                SET deleted_at = ?, deleted_reason = ?
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (utcnow_iso(), reason, note_id),
+            )
             conn.commit()
 
     def list_tags(self) -> list[str]:
@@ -469,7 +617,9 @@ class Database:
 
     def count_notes(self) -> int:
         with self.connection() as conn:
-            row = conn.execute("SELECT COUNT(*) AS count FROM NOTE").fetchone()
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM NOTE WHERE deleted_at IS NULL"
+            ).fetchone()
         return int(row["count"]) if row else 0
 
     def recent_notes(self, *, limit: int = 5) -> list[dict[str, Any]]:
@@ -478,6 +628,7 @@ class Database:
                 """
                 SELECT *
                 FROM NOTE
+                WHERE deleted_at IS NULL
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
@@ -496,7 +647,9 @@ class Database:
                 SELECT COUNT(*) AS count
                 FROM NOTE_TAG
                 JOIN TAG ON TAG.id = NOTE_TAG.tag_id
+                JOIN NOTE ON NOTE.id = NOTE_TAG.note_id
                 WHERE TAG.normalized_name = ?
+                  AND NOTE.deleted_at IS NULL
                 """,
                 (normalized,),
             ).fetchone()
@@ -512,6 +665,7 @@ class Database:
                 JOIN NOTE_TAG ON NOTE_TAG.note_id = NOTE.id
                 JOIN TAG ON TAG.id = NOTE_TAG.tag_id
                 WHERE TAG.normalized_name = ?
+                  AND NOTE.deleted_at IS NULL
                 ORDER BY NOTE.created_at DESC
                 LIMIT ?
                 """,
@@ -596,8 +750,12 @@ class Database:
                     file_size,
                     width,
                     height,
+                    ocr_text,
+                    summary,
+                    image_type,
+                    confidence,
                     created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     image_id,
@@ -609,11 +767,187 @@ class Database:
                     file_size,
                     width,
                     height,
+                    None,
+                    None,
+                    None,
+                    None,
                     utcnow_iso(),
                 ),
             )
             conn.commit()
         return image_id
+
+    def update_image_analysis(
+        self,
+        image_id: str,
+        *,
+        ocr_text: str | None,
+        summary: str | None,
+        image_type: str | None,
+        confidence: float | None,
+    ) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                """
+                UPDATE IMAGE_FILE
+                SET ocr_text = ?, summary = ?, image_type = ?, confidence = ?
+                WHERE id = ?
+                """,
+                (ocr_text, summary, image_type, confidence, image_id),
+            )
+            conn.commit()
+
+    def set_conversation_state(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        key: str,
+        value: Any,
+    ) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO CONVERSATION_STATE (
+                    chat_id,
+                    sender_id,
+                    key,
+                    value_json,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id, sender_id, key)
+                DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    chat_id,
+                    sender_id,
+                    key,
+                    json.dumps(value, ensure_ascii=False),
+                    utcnow_iso(),
+                ),
+            )
+            conn.commit()
+
+    def get_conversation_state(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        key: str,
+        max_age_minutes: int | None = 30,
+    ) -> Any | None:
+        query = """
+            SELECT value_json, updated_at
+            FROM CONVERSATION_STATE
+            WHERE chat_id = ? AND sender_id = ? AND key = ?
+        """
+        params: list[Any] = [chat_id, sender_id, key]
+        if max_age_minutes is not None:
+            cutoff = (datetime.now(UTC) - timedelta(minutes=max_age_minutes)).isoformat()
+            query += " AND updated_at >= ?"
+            params.append(cutoff)
+        query += " ORDER BY updated_at DESC LIMIT 1"
+
+        with self.connection() as conn:
+            row = conn.execute(query, tuple(params)).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(str(row["value_json"]))
+        except json.JSONDecodeError:
+            return None
+
+    def clear_conversation_state(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        key: str,
+    ) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                """
+                DELETE FROM CONVERSATION_STATE
+                WHERE chat_id = ? AND sender_id = ? AND key = ?
+                """,
+                (chat_id, sender_id, key),
+            )
+            conn.commit()
+
+    def insert_note_revision(
+        self,
+        *,
+        note_id: str,
+        previous_body: str,
+        new_body: str,
+        reason: str | None = None,
+    ) -> str:
+        revision_id = str(uuid.uuid4())
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO NOTE_REVISION (
+                    id,
+                    note_id,
+                    previous_body,
+                    new_body,
+                    reason,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    revision_id,
+                    note_id,
+                    previous_body,
+                    new_body,
+                    reason,
+                    utcnow_iso(),
+                ),
+            )
+            conn.commit()
+        return revision_id
+
+    def replace_note_body(
+        self,
+        *,
+        note_id: str,
+        new_body: str,
+        reason: str | None = None,
+    ) -> dict[str, Any] | None:
+        note = self.get_note(note_id)
+        if note is None:
+            return None
+
+        previous_body = str(note.get("body") or "")
+        self.insert_note_revision(
+            note_id=note_id,
+            previous_body=previous_body,
+            new_body=new_body,
+            reason=reason,
+        )
+
+        with self.connection() as conn:
+            conn.execute(
+                "UPDATE NOTE SET body = ? WHERE id = ?",
+                (new_body, note_id),
+            )
+            conn.execute(
+                """
+                UPDATE IMAGE_FILE
+                SET ocr_text = ?
+                WHERE message_id = (
+                    SELECT message_id
+                    FROM NOTE
+                    WHERE id = ?
+                )
+                """,
+                (new_body, note_id),
+            )
+            conn.commit()
+
+        return self.get_note_with_source(note_id)
 
     def fetch_all(self, table: str) -> list[dict[str, Any]]:
         with self.connection() as conn:
@@ -623,6 +957,38 @@ class Database:
     @staticmethod
     def _normalize_tag_name(tag: str) -> str:
         return " ".join(tag.strip().lower().split())
+
+    @staticmethod
+    def _expand_search_terms(query: str) -> list[str]:
+        raw_terms = [
+            term
+            for term in re.split(r"\s+", query.strip())
+            if len(term) >= 1
+        ]
+        if not raw_terms:
+            return []
+
+        expanded: list[str] = []
+        seen: set[str] = set()
+        alias_map = {
+            "september": ["9월", "9"],
+            "9월": ["september", "9"],
+            "todo": ["할일", "할 일"],
+            "할일": ["todo", "할 일"],
+            "할": ["todo"],
+        }
+        for term in raw_terms:
+            normalized = term.strip().lower()
+            if len(term) >= 2 and normalized not in seen:
+                seen.add(normalized)
+                expanded.append(term)
+            for alias in alias_map.get(normalized, []):
+                alias_key = alias.lower()
+                if alias_key in seen:
+                    continue
+                seen.add(alias_key)
+                expanded.append(alias)
+        return expanded
 
     def _replace_note_tags(
         self,

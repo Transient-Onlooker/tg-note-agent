@@ -1,46 +1,56 @@
 flowchart TD
     In["Telegram message / photo"] --> Store["Store MESSAGE immediately"]
-    Store --> Ack["Reply: 수신 완료."]
-    Store --> Context["Load same-chat context<br/>last 30 minutes only"]
-    Context --> Decide["Hybrid routing"]
+    Store --> Ack["Best-effort immediate ack"]
+    Ack --> AckFail{"Ack send failed?"}
+    AckFail -->|Yes| AckWarn["logger.warning<br/>webhook still returns 200"]
+    AckFail -->|No| Accepted["Accepted"]
+    AckWarn --> Accepted
 
-    Decide --> Fast{"Common request?"}
-    Fast -->|Yes| FastTool["Fast-path tool route"]
-    Fast -->|No| Agent["Read-focused fallback agent"]
+    Store --> State["Load CONVERSATION_STATE"]
+    State --> Gate{"Deterministic command gate first"}
 
-    FastTool --> Count["count_notes"]
-    FastTool --> Search["search_notes"]
-    FastTool --> Tags["list_tags / notes_by_tag"]
-    FastTool --> MergeSuggest["suggest_note_merge"]
+    Gate -->|Numbered reference| Numbered["Resolve from last_list_results<br/>then last_search_results<br/>set last_selected_note_id"]
+    Gate -->|Read original| ReadLast["DB-only lookup<br/>NOTE.body or IMAGE_FILE.ocr_text"]
+    Gate -->|Search / Recent / Count| ReadTools["DB-only active NOTE reads<br/>save list/search result state"]
+    Gate -->|Correction| Correct["Resolve target<br/>insert NOTE_REVISION<br/>update NOTE.body + IMAGE_FILE.ocr_text"]
+    Gate -->|Delete request| DeleteAsk["Store pending_delete_note_id"]
+    Gate -->|Delete confirm| DeleteExec["Idempotent soft delete<br/>deleted_at + deleted_reason"]
+    Gate -->|No command| MetaGuard{"Meta-command safety net"}
 
-    Agent --> Read1["search_notes / list_tags / recent_notes"]
-    Read1 --> Read2["read_note if needed"]
-    Read2 --> Respond["Final plain text response"]
+    MetaGuard -->|Meta command| NoSave["Do not create or append NOTE"]
+    MetaGuard -->|Normal content| Context["Load same-chat context<br/>last 30 minutes only"]
+    Context --> AIRouter["AI route_text"]
 
-    Decide --> Note{"Should save note?"}
-    Note -->|Create| Create["Create NOTE"]
-    Note -->|Append| Append["Append to existing NOTE"]
-    Note -->|Ignore| Ignore["Do not save"]
+    AIRouter -->|Create| Create["Create NOTE + AI_ANALYSIS"]
+    AIRouter -->|Append| Append["Append to existing NOTE"]
+    AIRouter -->|Ignore| Ignore["Mark processed; no NOTE"]
+    AIRouter -->|Tool| Tool["Tags / merge / fallback read tools"]
 
-    Decide --> Photo{"Photo?"}
-    Photo -->|Note image| OCR["OCR + classify + save"]
-    Photo -->|Unclear| Clarify["Ask user"]
-    Photo -->|General photo| Archive["Keep archive only"]
+    In -->|Photo| Photo["Store IMAGE_FILE"]
+    Photo --> Vision["OCR + classify"]
+    Vision --> ImageUpdate["Update IMAGE_FILE<br/>ocr_text / summary / image_type / confidence"]
+    ImageUpdate --> Existing{"Existing NOTE for message/image?"}
+    Existing -->|Yes| ExistingRef["Reuse NOTE<br/>set last_image_note_id"]
+    Existing -->|No note image| ImageNote["Create NOTE<br/>set last_artifact_note_id + last_image_note_id"]
+    Existing -->|Unclear| Review["MESSAGE.status=needs_review"]
+    Existing -->|General photo| PhotoOnly["Archive only"]
 
-    MergeSuggest --> Proposal["Create MERGE_PROPOSAL"]
-    Proposal --> Approve{"User approves?"}
-    Approve -->|Yes| MergeExec["Merge note and delete duplicate"]
-    Approve -->|No| Close["Close proposal"]
+    Numbered --> Reply["Best-effort result reply"]
+    ReadLast --> Reply
+    ReadTools --> Reply
+    Correct --> Reply
+    DeleteAsk --> Reply
+    DeleteExec --> Reply
+    NoSave --> Reply
+    Create --> Reply
+    Append --> Reply
+    Ignore --> Reply
+    Tool --> Reply
+    ExistingRef --> Reply
+    ImageNote --> Reply
+    Review --> Reply
+    PhotoOnly --> Reply
 
-    Count --> Done["Reply to user"]
-    Search --> Done
-    Tags --> Done
-    Respond --> Done
-    Create --> Done
-    Append --> Done
-    Ignore --> Done
-    OCR --> Done
-    Clarify --> Done
-    Archive --> Done
-    MergeExec --> Done
-    Close --> Done
+    Reply --> ReplyFail{"Result send failed?"}
+    ReplyFail -->|Yes| ReplyFailed["MESSAGE.status=reply_failed<br/>logger.warning"]
+    ReplyFail -->|No| Done["Keep action status"]

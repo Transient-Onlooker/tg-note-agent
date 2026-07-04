@@ -4,18 +4,23 @@ import logging
 import os
 import re
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 from fastapi import BackgroundTasks
 
 from app.integrations.telegram import TelegramClient
 from app.models.db import DuplicateMessageError, StoredMessage
-from app.models.schemas import TelegramMessage, TelegramPhotoSize, TelegramUpdate, WebhookResult
+from app.models.schemas import TelegramMessage, TelegramPhotoSize, TelegramUpdate, TextAnalysisResult, WebhookResult
 from app.services.image_archive import ImageArchive
 from app.services.nim_provider import NIMProviderError, NvidiaNIMProvider
 from app.services.note_manager import NoteManager
 
 logger = logging.getLogger(__name__)
+_CURRENT_REPLY_MESSAGE_ID: ContextVar[str | None] = ContextVar(
+    "current_reply_message_id",
+    default=None,
+)
 
 PHOTO_ONLY_KEYWORDS = {"사진", "일반 사진", "보관", "보관용", "그냥 사진"}
 NOTE_SCOPE_HINTS = (
@@ -40,10 +45,188 @@ NOTE_COUNT_HINTS = (
     "총 몇",
 )
 
+"""
+FAST_READ_REFERENCE_HINTS = (
+    "저 메모",
+    "이 메모",
+    "그 메모",
+    "방금 메모",
+    "방금 저장",
+    "방금 시킨",
+    "아까 메모",
+    "아까 사진",
+    "저 사진",
+    "이 사진",
+    "그 사진",
+    "사진 메모",
+    "ocr",
+    "그거",
+)
+FAST_READ_CONTENT_HINTS = (
+    "전체 내용",
+    "전체 메모",
+    "원문",
+    "뭐라고 저장",
+    "어떻게 저장",
+    "요약 말고",
+    "풀어서",
+    "전문",
+    "본문",
+)
+
+
+"""
+FAST_READ_REFERENCE_HINTS = (
+    "\uc800 \uba54\ubaa8",
+    "\uc774 \uba54\ubaa8",
+    "\uadf8 \uba54\ubaa8",
+    "\ubc29\uae08 \uba54\ubaa8",
+    "\ubc29\uae08 \uc800\uc7a5",
+    "\ubc29\uae08 \uc2dc\ud0a8",
+    "\uc544\uae4c \uba54\ubaa8",
+    "\uc544\uae4c \uc0ac\uc9c4",
+    "\uc800 \uc0ac\uc9c4",
+    "\uc774 \uc0ac\uc9c4",
+    "\uadf8 \uc0ac\uc9c4",
+    "\uc0ac\uc9c4 \uba54\ubaa8",
+    "ocr",
+    "\uadf8\uac70",
+)
+FAST_READ_CONTENT_HINTS = (
+    "\uc804\uccb4 \ub0b4\uc6a9",
+    "\uc804\uccb4 \uba54\ubaa8",
+    "\uc6d0\ubb38",
+    "\ubb50\ub77c\uace0 \uc800\uc7a5",
+    "\uc5b4\ub5bb\uac8c \uc800\uc7a5",
+    "\uc694\uc57d \ub9d0\uace0",
+    "\ud480\uc5b4\uc11c",
+    "\uc804\ubb38",
+    "\ubcf8\ubb38",
+)
+DELETE_HINTS = ("\uc0ad\uc81c", "\uc9c0\uc6cc", "\uc5c6\uc560")
+DELETE_CONFIRM_HINTS = (
+    "\uc0ad\uc81c \ud655\uc778",
+    "\uc815\ub9d0 \uc0ad\uc81c",
+    "\uc751 \uc0ad\uc81c",
+    "\uc9c0\uc6cc",
+)
+CORRECTION_HINTS = (
+    "\uc218\uc815\ud574\uc918",
+    "\uc218\uc815\ud558\ub77c\uace0",
+    "\uc218\uc815",
+    "\uc815\uc815\ud574\uc918",
+    "\uace0\uccd0\uc918",
+    "\ubc14\uafd4\uc918",
+)
+SEARCH_VERBS = (
+    "\uc54c\ub824\uc918",
+    "\ubcf4\uc5ec\uc918",
+    "\ucc3e\uc544\uc918",
+    "\uac80\uc0c9",
+    "\ubb50 \uc788",
+    "\ubb50\uc788",
+)
+NOTE_COMMAND_HINTS = (
+    "\uba54\ubaa8",
+    "\ub178\ud2b8",
+    "\uc800\uc7a5\ud55c",
+    "\uc800\uc7a5\ub41c",
+    "\uc0ac\uc9c4",
+)
+LIST_HINTS = (
+    "\uc804\uccb4",
+    "\uc804\ubd80",
+    "\ubaa9\ub85d",
+    "\ucd5c\uadfc",
+)
+LIST_ALL_PHRASES = (
+    "\uc804\uccb4 \uba54\ubaa8 \ubaa9\ub85d",
+    "\ubaa8\ub4e0 \uba54\ubaa8",
+    "\uc5ec\ud0dc\uae4c\uc9c0 \uc800\uc7a5\ub41c \uba54\ubaa8",
+    "\uc800\uc7a5\ub41c \uba54\ubaa8\ub4e4",
+    "\uc804\uccb4 \ubaa9\ub85d",
+    "\uba54\ubaa8 \ubaa9\ub85d",
+    "\uc804\uccb4 \uc800\uc7a5 \ud56d\ubaa9",
+)
+LIST_RECENT_PHRASES = (
+    "\ucd5c\uadfc \uc800\uc7a5\ub41c \ud56d\ubaa9",
+)
+LIST_DISCOURSE_PREFIXES = (
+    "\uc544\ub2c8 \uadf8\uac70 \ub9d0\uace0",
+    "\uadf8\uac70 \ub9d0\uace0",
+    "\uc544\ub2c8",
+)
+TECHNICAL_NOTE_KEYWORDS = (
+    "fastapi",
+    "sqlite",
+    "image_file",
+    "message",
+    "note",
+    "ai_analysis",
+    "tag",
+    "note_tag",
+    "conversation_state",
+    "note_revision",
+    "webhook",
+    "ocr",
+    "nim",
+    "ocr_text",
+    "summary",
+    "image_type",
+    "confidence",
+    "schema",
+    "pipeline",
+    "table",
+    "column",
+    "컬럼",
+    "테이블",
+    "파이프라인",
+    "구조",
+)
+
 
 @dataclass(slots=True)
 class RouterConfig:
     allowed_user_ids: set[int]
+
+
+@dataclass(slots=True)
+class CommandIntent:
+    name: str
+    query: str | None = None
+    note_id: str | None = None
+    old_text: str | None = None
+    new_text: str | None = None
+
+
+class SafeTelegramSender:
+    def __init__(self, telegram_client: TelegramClient, reply_failure_callback=None) -> None:
+        self.telegram_client = telegram_client
+        self.reply_failure_callback = reply_failure_callback
+
+    def send_message(self, chat_id: int | str, text: str) -> bool:
+        try:
+            sent = self.telegram_client.send_message(chat_id, text)
+        except Exception:
+            logger.warning(
+                "Telegram send_message raised chat_id=%s",
+                chat_id,
+                exc_info=True,
+            )
+            self._mark_reply_failed_if_processing()
+            return False
+        if sent is False:
+            logger.warning("Telegram send_message failed chat_id=%s", chat_id)
+            self._mark_reply_failed_if_processing()
+            return False
+        return True
+
+    def _mark_reply_failed_if_processing(self) -> None:
+        if self.reply_failure_callback is None:
+            return
+        message_id = _CURRENT_REPLY_MESSAGE_ID.get()
+        if message_id is not None:
+            self.reply_failure_callback(message_id)
 
 
 class UpdateRouter:
@@ -58,8 +241,11 @@ class UpdateRouter:
         self.config = config
         self.note_manager = note_manager
         self.nim_provider = nim_provider
-        self.telegram_client = telegram_client
+        self.telegram_client = SafeTelegramSender(telegram_client, self._mark_reply_failed)
         self.image_archive = image_archive
+
+    def _mark_reply_failed(self, message_id: str) -> None:
+        self.note_manager.mark_reply_failed(message_id)
 
     def handle_update(
         self,
@@ -137,8 +323,7 @@ class UpdateRouter:
         if message_id is None:
             return WebhookResult(status="ignored", detail="duplicate_message")
         logger.info("Stored raw text message message_id=%s db_message_id=%s", message.message_id, message_id)
-        self.telegram_client.send_message(message.chat.id, "수신 완료.")
-        logger.info("Sent receive acknowledgement chat_id=%s", message.chat.id)
+        self._send_message_safely(message.chat.id, "수신 완료.", purpose="text_ack")
 
         if background_tasks is not None:
             background_tasks.add_task(
@@ -146,10 +331,11 @@ class UpdateRouter:
                 message_id,
                 message.chat.id,
                 message.text or "",
+                message.from_user.id,
             )
             return WebhookResult(status="accepted")
 
-        self.process_message(message_id, message.chat.id, message.text or "")
+        self.process_message(message_id, message.chat.id, message.text or "", message.from_user.id)
         return WebhookResult(status="processed")
 
     def _handle_photo_message(
@@ -173,14 +359,14 @@ class UpdateRouter:
         if message_id is None:
             return WebhookResult(status="ignored", detail="duplicate_message")
         logger.info("Stored raw photo message message_id=%s db_message_id=%s", message.message_id, message_id)
-        self.telegram_client.send_message(message.chat.id, "사진 수신 완료.")
-        logger.info("Sent photo receive acknowledgement chat_id=%s", message.chat.id)
+        self._send_message_safely(message.chat.id, "사진 수신 완료.", purpose="photo_ack")
 
         if background_tasks is not None:
             background_tasks.add_task(
                 self.process_photo_message,
                 message_id,
                 message.chat.id,
+                message.from_user.id,
                 message.message_id,
                 largest_photo,
                 message.caption,
@@ -190,6 +376,7 @@ class UpdateRouter:
         self.process_photo_message(
             message_id,
             message.chat.id,
+            message.from_user.id,
             message.message_id,
             largest_photo,
             message.caption,
@@ -235,10 +422,16 @@ class UpdateRouter:
                 pending_photo_review["id"],
                 message.chat.id,
                 reply_text,
+                message.from_user.id,
             )
             return WebhookResult(status="accepted", detail="photo_review_retry")
 
-        self.process_message(pending_photo_review["id"], message.chat.id, reply_text)
+        self.process_message(
+            pending_photo_review["id"],
+            message.chat.id,
+            reply_text,
+            message.from_user.id,
+        )
         return WebhookResult(status="processed", detail="photo_review_retry")
 
     def _handle_merge_proposal_reply(
@@ -340,8 +533,53 @@ class UpdateRouter:
         )
         return WebhookResult(status="processed", detail="note_count")
 
-    def process_message(self, message_id: str, chat_id: int | str, text: str) -> None:
+    def process_message(
+        self,
+        message_id: str,
+        chat_id: int | str,
+        text: str,
+        sender_id: int | str | None = None,
+    ) -> None:
+        reply_token = _CURRENT_REPLY_MESSAGE_ID.set(message_id)
         try:
+            resolved_sender_id = self._resolve_sender_id(message_id, sender_id)
+            command = self._detect_direct_command(text)
+            if command is not None and self._handle_direct_command(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=resolved_sender_id,
+                text=text,
+                command=command,
+            ):
+                return
+
+            if self._looks_like_technical_note_statement(text):
+                logger.info(
+                    "Technical note statement matched before AI route db_message_id=%s llm_called=false",
+                    message_id,
+                )
+                self._handle_technical_note_statement(
+                    message_id=message_id,
+                    chat_id=chat_id,
+                    sender_id=resolved_sender_id,
+                    text=text,
+                )
+                return
+
+            if self._looks_like_meta_command(text):
+                self.note_manager.mark_processed(message_id)
+                self._send_result_message(
+                    message_id,
+                    chat_id,
+                    "\uba54\ubaa8\ub85c \uc800\uc7a5\ud558\uc9c4 \uc54a\uc558\uc5b4.",
+                    purpose="meta_command_ignored",
+                )
+                logger.info(
+                    "Blocked meta command before AI route db_message_id=%s llm_called=false",
+                    message_id,
+                )
+                return
+
             logger.info(
                 "Starting text route db_message_id=%s router_model=%s",
                 message_id,
@@ -377,6 +615,21 @@ class UpdateRouter:
                 )
                 return
 
+            if route.route in {"create", "append"} and self._looks_like_meta_command(text):
+                self.note_manager.mark_processed(message_id)
+                self._send_result_message(
+                    message_id,
+                    chat_id,
+                    "\uba54\ubaa8\ub85c \uc800\uc7a5\ud558\uc9c4 \uc54a\uc558\uc5b4.",
+                    purpose="meta_command_ai_route_blocked",
+                )
+                logger.info(
+                    "Blocked meta command after AI route db_message_id=%s route=%s",
+                    message_id,
+                    route.route,
+                )
+                return
+
             if (
                 route.route == "ignore"
             ) and not self._should_retry_as_contextual_query(
@@ -384,6 +637,11 @@ class UpdateRouter:
                 conversation_context=conversation_context,
             ):
                 self.note_manager.mark_processed(message_id)
+                logger.info(
+                    "Ignored text after AI route db_message_id=%s reason=%s",
+                    message_id,
+                    route.reason,
+                )
                 self.telegram_client.send_message(
                     chat_id,
                     "메모로 저장하진 않았어.",
@@ -441,49 +699,1106 @@ class UpdateRouter:
                 existing_note_id=existing_note_id,
             )
             logger.info("Stored note and AI analysis db_message_id=%s", message_id)
-            response_text = self._build_success_message(
+            self._remember_note_reference(
+                chat_id=str(chat_id),
+                sender_id=resolved_sender_id,
+                note_id=saved_note.note_id,
+            )
+            response_text = self._build_note_saved_message(
+                analysis.title,
                 analysis.summary,
                 saved_note.action,
                 saved_note.notion_status,
             )
-            self.telegram_client.send_message(chat_id, response_text)
+            self._send_result_message(message_id, chat_id, response_text, purpose="text_completion")
             logger.info("Sent text completion message chat_id=%s db_message_id=%s", chat_id, message_id)
         except NIMProviderError as exc:
             logger.exception("Failed to process Telegram text db_message_id=%s", message_id)
             self.note_manager.mark_ai_failed(message_id)
-            self.telegram_client.send_message(
+            self._send_result_message(
+                message_id,
                 chat_id,
                 f"AI 분석이 너무 오래 걸리거나 실패했어. ({exc})",
+                purpose="text_ai_failed",
             )
         except Exception:
             logger.exception("Failed to process Telegram text db_message_id=%s", message_id)
-            self.note_manager.mark_ai_failed(message_id)
-            self.telegram_client.send_message(
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
                 chat_id,
                 "메시지는 저장했지만 AI 분석에는 실패했어. 나중에 다시 시도해줘.",
+                purpose="text_action_failed",
+            )
+        finally:
+            _CURRENT_REPLY_MESSAGE_ID.reset(reply_token)
+
+    def _resolve_sender_id(self, message_id: str, sender_id: int | str | None) -> str:
+        if sender_id is not None:
+            return str(sender_id)
+        message = self.note_manager.get_message(message_id)
+        if message is None:
+            return "0"
+        return str(message.get("sender_id") or "0")
+
+    def _detect_direct_command(self, text: str | None) -> CommandIntent | None:
+        if not text:
+            return None
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return None
+
+        if any(hint == normalized for hint in DELETE_CONFIRM_HINTS):
+            return CommandIntent(name="delete_confirm")
+
+        list_mode = self._list_command_mode(normalized)
+        if list_mode is not None:
+            return CommandIntent(name="recent_notes", query=list_mode)
+
+        if self._looks_like_numbered_select_request(normalized):
+            return CommandIntent(name="select_note")
+
+        if self._looks_like_numbered_read_request(normalized):
+            return CommandIntent(name="read_last_note")
+
+        if self._detect_fast_read_intent(text) == "read_last_note":
+            return CommandIntent(name="read_last_note")
+
+        if self._is_note_count_request(text):
+            return CommandIntent(name="count_notes")
+
+        if self._extract_selection_index(normalized) is not None and "\uc218\uc815" in normalized:
+            return CommandIntent(name="correct_last_note")
+
+        correction = self._extract_correction_intent(text)
+        if correction is not None:
+            return correction
+
+        if self._looks_like_delete_request(normalized):
+            return CommandIntent(name="delete_request")
+
+        if self._looks_like_recent_list_request(normalized):
+            return CommandIntent(name="recent_notes")
+
+        if self._looks_like_search_request(normalized):
+            return CommandIntent(
+                name="search_notes",
+                query=self._clean_search_query(text),
+            )
+        return None
+
+    def _handle_direct_command(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        text: str,
+        command: CommandIntent,
+    ) -> bool:
+        logger.info(
+            "Direct command gate db_message_id=%s intent=%s llm_called=false",
+            message_id,
+            command.name,
+        )
+        if command.name == "read_last_note":
+            self._clear_correction_state(chat_id=str(chat_id), sender_id=sender_id)
+            self._handle_fast_read_last_note(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                text=text,
+            )
+            return True
+
+        if command.name == "select_note":
+            return self._handle_note_selection(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                text=text,
             )
 
-    def process_note_search(self, message_id: str, chat_id: int | str, query: str) -> None:
+        if command.name == "count_notes":
+            self._clear_correction_state(chat_id=str(chat_id), sender_id=sender_id)
+            note_count = self.note_manager.count_notes()
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                f"\uc9c0\uae08 \uc800\uc7a5\ub41c \uba54\ubaa8\ub294 {note_count}\uac1c\uc57c.",
+                purpose="count_notes",
+            )
+            return True
+
+        if command.name == "recent_notes":
+            self._clear_correction_state(chat_id=str(chat_id), sender_id=sender_id)
+            note_limit = 5
+            if command.query == "all":
+                note_limit = max(self.note_manager.count_notes(), 1)
+            notes = self.note_manager.recent_notes(limit=note_limit)
+            self._remember_list_results(
+                chat_id=str(chat_id),
+                sender_id=sender_id,
+                note_ids=[str(note.get("id")) for note in notes if note.get("id")],
+            )
+            self._remember_search_results(
+                chat_id=str(chat_id),
+                sender_id=sender_id,
+                note_ids=[str(note.get("id")) for note in notes if note.get("id")],
+                query="recent_notes",
+            )
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                self._build_recent_notes_plain_message(notes),
+                purpose="recent_notes",
+            )
+            return True
+
+        if command.name == "search_notes":
+            self._clear_correction_state(chat_id=str(chat_id), sender_id=sender_id)
+            self.process_note_search(
+                message_id,
+                chat_id,
+                command.query or text,
+                sender_id,
+            )
+            return True
+
+        if command.name == "delete_request":
+            return self._handle_delete_request(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                text=text,
+            )
+
+        if command.name == "delete_confirm":
+            return self._handle_delete_confirm(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+            )
+
+        if command.name == "correct_last_note":
+            return self._handle_note_correction(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                text=text,
+                old_text=command.old_text or "",
+                new_text=command.new_text or "",
+            )
+
+        return False
+
+    def _handle_delete_request(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        text: str,
+    ) -> bool:
+        resolved = self._resolve_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            text=text,
+            prefer_image=False,
+        )
+        note = resolved.get("note")
+        candidates = resolved.get("candidates") or []
+
+        if candidates:
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                self._build_reference_choice_message(
+                    action_label="\uc0ad\uc81c",
+                    notes=candidates,
+                ),
+                purpose="delete_reference_choice",
+            )
+            return True
+
+        if not isinstance(note, dict):
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "\uc0ad\uc81c\ud560 \uba54\ubaa8\ub97c \ucc3e\uc9c0 \ubabb\ud588\uc5b4. \uc81c\ubaa9\uc774\ub098 \uac80\uc0c9 \uacb0\uacfc \ubc88\ud638\ub97c \ud568\uaed8 \ubcf4\ub0b4\uc918.",
+                purpose="delete_target_missing",
+            )
+            return True
+
+        self.note_manager.set_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="pending_delete_note_id",
+            value={"note_id": str(note.get("id"))},
+        )
+        self.note_manager.mark_processed(message_id)
+        self._send_result_message(
+            message_id,
+            chat_id,
+            self._build_delete_confirmation_message(note),
+            purpose="delete_confirmation",
+        )
+        return True
+
+    def _handle_note_selection(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        text: str,
+    ) -> bool:
+        resolved = self._resolve_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            text=text,
+            prefer_image=True,
+        )
+        note = resolved.get("note")
+        if not isinstance(note, dict):
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "\ud574\ub2f9 \ubc88\ud638\uc758 \uba54\ubaa8\ub97c \ucc3e\uc9c0 \ubabb\ud588\uc5b4. \ucd5c\uadfc \uc800\uc7a5\ub41c \ud56d\ubaa9\uc744 \ub2e4\uc2dc \ubcf4\uc5ec\uc904\uac8c.",
+                purpose="select_note_missing",
+            )
+            notes = self.note_manager.recent_notes(limit=5)
+            self._remember_list_results(
+                chat_id=str(chat_id),
+                sender_id=sender_id,
+                note_ids=[str(item.get("id")) for item in notes if item.get("id")],
+            )
+            self._send_result_message(
+                message_id,
+                chat_id,
+                self._build_recent_notes_plain_message(notes),
+                purpose="select_note_recent_fallback",
+            )
+            return True
+
+        self.note_manager.set_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="last_selected_note_id",
+            value={"note_id": str(note.get("id"))},
+        )
+        self._remember_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            note_id=str(note.get("id")),
+        )
+        self.note_manager.mark_processed(message_id)
+        title = str(note.get("title") or "\uc81c\ubaa9 \uc5c6\uc74c").strip()
+        self._send_result_message(
+            message_id,
+            chat_id,
+            f"1\ubc88 \uba54\ubaa8\ub97c \uc120\ud0dd\ud588\uc5b4.\n\n\uc81c\ubaa9: {title}\n\n\uc6d0\ubb38 \ubcf4\uae30, \uc218\uc815, \uc0ad\uc81c \uc911 \ubb50\ub97c \ud560\uae4c?",
+            purpose="select_note",
+        )
+        return True
+
+    def _handle_technical_note_statement(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        text: str,
+    ) -> None:
+        analysis = self._build_technical_note_analysis(text)
+        saved_note = self.note_manager.store_analysis_and_note(
+            message_id=message_id,
+            provider_name="deterministic_gate",
+            model_name="technical_note_statement",
+            source_text=text,
+            analysis=analysis,
+        )
+        self._remember_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            note_id=saved_note.note_id,
+        )
+        self.note_manager.set_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="last_selected_note_id",
+            value={"note_id": saved_note.note_id},
+        )
+        response_text = self._build_note_saved_message(
+            analysis.title,
+            analysis.summary,
+            saved_note.action,
+            saved_note.notion_status,
+        )
+        self._send_result_message(
+            message_id,
+            chat_id,
+            response_text,
+            purpose="technical_note_saved",
+        )
+
+    def _handle_delete_confirm(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+    ) -> bool:
+        pending = self.note_manager.get_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="pending_delete_note_id",
+        )
+        note_id = pending.get("note_id") if isinstance(pending, dict) else None
+        if not note_id:
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "\uc0ad\uc81c \ub300\uae30 \uc911\uc778 \uba54\ubaa8\uac00 \uc5c6\uc5b4.",
+                purpose="delete_confirm_no_pending",
+            )
+            return True
+        note = self.note_manager.get_note_with_source(str(note_id)) if note_id else None
+        if note is None:
+            deleted_note = self.note_manager.get_note_any_status(str(note_id))
+            self.note_manager.clear_conversation_state(
+                chat_id=str(chat_id),
+                sender_id=sender_id,
+                key="pending_delete_note_id",
+            )
+            self.note_manager.mark_processed(message_id)
+            if deleted_note is not None and deleted_note.get("deleted_at"):
+                self._send_result_message(
+                    message_id,
+                    chat_id,
+                    "\uc774 \uba54\ubaa8\ub294 \uc774\ubbf8 \uc0ad\uc81c\ub418\uc5b4 \uc788\uc5b4.",
+                    purpose="delete_confirm_already_deleted",
+                )
+                return True
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "\uc9c0\uae08 \ud655\uc778 \ub300\uae30 \uc911\uc778 \uc0ad\uc81c \ub300\uc0c1\uc744 \ucc3e\uc9c0 \ubabb\ud588\uc5b4.",
+                purpose="delete_confirm_missing_target",
+            )
+            return True
+
+        self.note_manager.delete_note(str(note.get("id")), reason="user_confirmed_delete")
+        self.note_manager.clear_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="pending_delete_note_id",
+        )
+        self.note_manager.mark_processed(message_id)
+        self._send_result_message(
+            message_id,
+            chat_id,
+            self._build_delete_completed_message(note),
+            purpose="delete_completed",
+        )
+        return True
+
+    def _handle_note_correction(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        text: str,
+        old_text: str,
+        new_text: str,
+    ) -> bool:
+        if not old_text or not new_text:
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "\uc218\uc815\ud560 \ubb38\uad6c\ub97c \uc815\ud655\ud788 \uc54c \uc218 \uc5c6\uc5b4. 'A\uac00 \uc544\ub2c8\ub77c B\uc57c. \uc218\uc815\ud574\uc918.' \ud615\uc2dd\uc73c\ub85c \ubcf4\ub0b4\uc918.",
+                purpose="correction_parse_failed",
+            )
+            return True
+
+        resolved = self._resolve_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            text=text,
+            prefer_image=True,
+        )
+        note = resolved.get("note")
+        candidates = resolved.get("candidates") or []
+        if candidates:
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                self._build_reference_choice_message(
+                    action_label="\uc218\uc815",
+                    notes=candidates,
+                ),
+                purpose="correction_reference_choice",
+            )
+            return True
+
+        if not isinstance(note, dict):
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "\uc218\uc815\ud560 \uba54\ubaa8\ub97c \ucc3e\uc9c0 \ubabb\ud588\uc5b4.",
+                purpose="correction_target_missing",
+            )
+            return True
+
+        current_body = str(note.get("image_ocr_text") or note.get("body") or "").strip()
+        if old_text not in current_body:
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                self._build_correction_miss_message(current_body),
+                purpose="correction_old_text_missing",
+            )
+            return True
+
+        updated_body = current_body.replace(old_text, new_text, 1)
+        updated_note = self.note_manager.replace_note_body(
+            note_id=str(note.get("id")),
+            new_body=updated_body,
+            reason="user_correction",
+        )
+        self.note_manager.mark_processed(message_id)
+        self._remember_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            note_id=str(note.get("id")),
+        )
+        self.note_manager.set_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="last_selected_note_id",
+            value={"note_id": str(note.get("id"))},
+        )
+        self._send_result_message(
+            message_id,
+            chat_id,
+            self._build_correction_success_message(
+                title=str((updated_note or note).get("title") or ""),
+                old_text=old_text,
+                new_text=new_text,
+                current_body=updated_body,
+            ),
+            purpose="correction_success",
+        )
+        return True
+
+    def _resolve_note_reference(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        text: str,
+        prefer_image: bool,
+    ) -> dict:
+        normalized = self._normalize_text(text)
+        selection_index = self._extract_selection_index(normalized)
+        list_note_ids = self._state_note_ids(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key="last_list_results",
+        )
+        search_note_ids = self._state_note_ids(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key="last_search_results",
+        )
+
+        if selection_index is not None:
+            for note_ids in (list_note_ids, search_note_ids):
+                if 0 <= selection_index < len(note_ids):
+                    note = self.note_manager.get_note_with_source(note_ids[selection_index])
+                    if note is not None:
+                        return {"note": note}
+            return {"missing_number": True}
+
+        last_selected = self.note_manager.get_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key="last_selected_note_id",
+        )
+        selected_note_id = None
+        if isinstance(last_selected, dict):
+            selected_note_id = last_selected.get("note_id")
+        elif isinstance(last_selected, str):
+            selected_note_id = last_selected
+        if selected_note_id:
+            note = self.note_manager.get_note_with_source(str(selected_note_id))
+            if note is not None:
+                return {"note": note}
+
+        note_ids = search_note_ids or list_note_ids
+        if note_ids:
+            if len(note_ids) == 1:
+                note = self.note_manager.get_note_with_source(note_ids[0])
+                if note is not None:
+                    return {"note": note}
+            if any(hint in normalized for hint in FAST_READ_REFERENCE_HINTS):
+                candidates = []
+                for note_id in note_ids[:5]:
+                    candidate = self.note_manager.get_note_with_source(note_id)
+                    if candidate is not None:
+                        candidates.append(candidate)
+                if candidates:
+                    return {"candidates": candidates}
+
+        last_artifact = self.note_manager.get_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key="last_artifact_note_id",
+        )
+        artifact_note_id = None
+        if isinstance(last_artifact, dict):
+            artifact_note_id = last_artifact.get("note_id")
+        elif isinstance(last_artifact, str):
+            artifact_note_id = last_artifact
+        if artifact_note_id:
+            note = self.note_manager.get_note_with_source(str(artifact_note_id))
+            if note is not None:
+                return {"note": note}
+
+        last_image = self.note_manager.get_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key="last_image_note_id",
+        )
+        image_note_id = None
+        if isinstance(last_image, dict):
+            image_note_id = last_image.get("note_id")
+        elif isinstance(last_image, str):
+            image_note_id = last_image
+        if image_note_id:
+            note = self.note_manager.get_note_with_source(str(image_note_id))
+            if note is not None:
+                return {"note": note}
+
+        fallback = self.note_manager.get_last_note_for_chat(
+            chat_id,
+            prefer_image=prefer_image,
+            within_minutes=30,
+        )
+        if fallback is not None:
+            return {"note": fallback}
+        return {}
+
+    def _resolve_correction_reference(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        text: str,
+        old_text: str,
+        prefer_image: bool,
+    ) -> dict:
+        normalized = self._normalize_text(text)
+        selection_index = self._extract_selection_index(normalized)
+        if selection_index is not None:
+            return self._resolve_note_reference(
+                chat_id=chat_id,
+                sender_id=sender_id,
+                text=text,
+                prefer_image=prefer_image,
+            )
+
+        selected = self.note_manager.get_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key="last_selected_note_id",
+        )
+        selected_note_id = selected.get("note_id") if isinstance(selected, dict) else selected
+        if selected_note_id:
+            note = self.note_manager.get_note_with_source(str(selected_note_id))
+            if note is not None:
+                return {"note": note}
+
+        for key in ("last_list_results", "last_search_results"):
+            matches = []
+            for note_id in self._state_note_ids(chat_id=chat_id, sender_id=sender_id, key=key):
+                note = self.note_manager.get_note_with_source(note_id)
+                body = str((note or {}).get("image_ocr_text") or (note or {}).get("body") or "")
+                if note is not None and old_text and old_text in body:
+                    matches.append(note)
+            if len(matches) == 1:
+                return {"note": matches[0]}
+            if len(matches) > 1:
+                return {"candidates": matches[:5]}
+
+        return self._resolve_note_reference(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            text=text,
+            prefer_image=prefer_image,
+        )
+
+    def _state_note_ids(self, *, chat_id: str, sender_id: str, key: str) -> list[str]:
+        state = self.note_manager.get_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key=key,
+        )
+        if not isinstance(state, dict):
+            return []
+        raw_ids = state.get("note_ids") or []
+        if not isinstance(raw_ids, list):
+            return []
+        return [str(item) for item in raw_ids if item]
+
+    def _remember_note_reference(self, *, chat_id: str, sender_id: str, note_id: str) -> None:
+        self.note_manager.set_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key="last_artifact_note_id",
+            value={"note_id": note_id},
+        )
+
+    def _remember_search_results(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        note_ids: list[str],
+        query: str,
+    ) -> None:
+        self.note_manager.set_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key="last_search_results",
+            value={"note_ids": note_ids, "query": query},
+        )
+
+    def _remember_list_results(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        note_ids: list[str],
+    ) -> None:
+        self.note_manager.set_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key="last_list_results",
+            value={"note_ids": note_ids},
+        )
+
+    def _clear_correction_state(self, *, chat_id: str, sender_id: str) -> None:
+        for key in ("pending_correction", "pending_correction_note_id", "pending_correction_payload"):
+            self.note_manager.clear_conversation_state(
+                chat_id=chat_id,
+                sender_id=sender_id,
+                key=key,
+            )
+
+    @staticmethod
+    def _looks_like_delete_request(normalized: str) -> bool:
+        has_delete = any(hint in normalized for hint in DELETE_HINTS)
+        has_reference = any(hint in normalized for hint in FAST_READ_REFERENCE_HINTS) or re.search(r"\d+\s*\ubc88", normalized)
+        return has_delete and has_reference
+
+    @staticmethod
+    def _looks_like_numbered_read_request(normalized: str) -> bool:
+        if not re.search(r"\d+\s*\ubc88", normalized):
+            return False
+        has_note = "\uba54\ubaa8" in normalized or "\ub178\ud2b8" in normalized
+        has_read = any(hint in normalized for hint in FAST_READ_CONTENT_HINTS + SEARCH_VERBS)
+        return has_note and has_read
+
+    @staticmethod
+    def _looks_like_numbered_select_request(normalized: str) -> bool:
+        if not re.fullmatch(r"\d+\s*\ubc88\s*(?:\uba54\ubaa8|\ub178\ud2b8)?", normalized):
+            return False
+        return True
+
+    @classmethod
+    def _looks_like_meta_command(cls, text: str | None) -> bool:
+        if not text:
+            return False
+        normalized = cls._normalize_text(text)
+        if not normalized:
+            return False
+        if cls._list_command_mode(normalized) is not None:
+            return True
+        if cls._looks_like_delete_request(normalized):
+            return True
+        if cls._looks_like_numbered_read_request(normalized):
+            return True
+        if any(hint in normalized for hint in DELETE_CONFIRM_HINTS):
+            return True
+        if cls._extract_selection_index(normalized) is not None and "\uc218\uc815" in normalized:
+            return True
+        if any(hint in normalized for hint in CORRECTION_HINTS):
+            return True
+        if cls._extract_correction_intent(text) is not None:
+            return True
+        has_read_content = any(hint in normalized for hint in FAST_READ_CONTENT_HINTS)
+        has_read_verb = any(verb in normalized for verb in SEARCH_VERBS)
+        has_note_reference = (
+            any(hint in normalized for hint in FAST_READ_REFERENCE_HINTS)
+            or any(hint in normalized for hint in NOTE_COMMAND_HINTS)
+            or re.search(r"\d+\s*\ubc88", normalized)
+        )
+        return bool(has_note_reference and has_read_content and has_read_verb)
+
+    @staticmethod
+    def _looks_like_recent_list_request(normalized: str) -> bool:
+        if UpdateRouter._list_command_mode(normalized) is not None:
+            return True
+        return (
+            any(hint in normalized for hint in NOTE_COMMAND_HINTS)
+            and any(hint in normalized for hint in LIST_HINTS)
+            and any(verb in normalized for verb in SEARCH_VERBS)
+        )
+
+    @classmethod
+    def _list_command_mode(cls, normalized: str) -> str | None:
+        stripped = normalized
+        for prefix in LIST_DISCOURSE_PREFIXES:
+            if stripped.startswith(prefix + " "):
+                stripped = stripped[len(prefix):].strip()
+                break
+            if stripped == prefix:
+                stripped = ""
+                break
+
+        if any(phrase in stripped for phrase in LIST_ALL_PHRASES):
+            return "all"
+        if any(phrase in stripped for phrase in LIST_RECENT_PHRASES):
+            return "recent"
+        return None
+
+    @staticmethod
+    def _looks_like_search_request(normalized: str) -> bool:
+        if any(hint in normalized for hint in DELETE_HINTS + CORRECTION_HINTS):
+            return False
+        if "\ud0dc\uadf8" in normalized:
+            return False
+        has_note_context = any(hint in normalized for hint in NOTE_COMMAND_HINTS)
+        has_search_verb = any(hint in normalized for hint in SEARCH_VERBS)
+        has_related = "\uad00\ub828" in normalized or "\ubb50\uc788" in normalized or "\ubb50 \uc788" in normalized
+        return has_note_context and (has_search_verb or has_related)
+
+    @classmethod
+    def _looks_like_technical_note_statement(cls, text: str | None) -> bool:
+        if not text:
+            return False
+        normalized = cls._normalize_text(text)
+        if not normalized:
+            return False
+        if cls._detect_fast_read_intent(text) == "read_last_note":
+            return False
+        if cls._looks_like_search_request(normalized):
+            return False
+        if cls._looks_like_recent_list_request(normalized):
+            return False
+        if cls._looks_like_delete_request(normalized):
+            return False
+        if cls._extract_correction_intent(text) is not None:
+            return False
+        if cls._is_note_count_request(text):
+            return False
+
+        structural_patterns = (
+            r".+\ub294 .+\uc5d0 .+\uc800\uc7a5\ud55c\ub2e4",
+            r".+\ub97c \ub530\ub85c \uc800\uc7a5\ud55c\ub2e4",
+            r".+\ud558\ub3c4\ub85d \uc124\uacc4\ud588\ub2e4",
+            r".+\uad6c\uc870\ub2e4",
+            r".+\ud30c\uc774\ud504\ub77c\uc778\uc740 .+",
+            r".+\ud14c\uc774\ube14\uc740 .+",
+            r".+\uceec\ub7fc\uc740 .+",
+        )
+        if any(re.search(pattern, text) for pattern in structural_patterns):
+            return True
+
+        keyword_hits = sum(1 for keyword in TECHNICAL_NOTE_KEYWORDS if keyword in normalized)
+        explanatory_verbs = (
+            "\uc800\uc7a5\ud55c\ub2e4",
+            "\uc124\uacc4\ud588\ub2e4",
+            "\uad6c\uc870\ub2e4",
+            "\uad00\ub9ac\ud55c\ub2e4",
+            "\uae30\ub85d\ud55c\ub2e4",
+            "\uc5c5\ub370\uc774\ud2b8\ud55c\ub2e4",
+        )
+        return keyword_hits >= 2 and any(verb in normalized for verb in explanatory_verbs)
+
+    @staticmethod
+    def _build_technical_note_analysis(text: str) -> TextAnalysisResult:
+        normalized = UpdateRouter._normalize_text(text)
+        tags: list[str] = []
+        tag_map = (
+            ("ocr", "ocr"),
+            ("image_file", "image_file"),
+            ("파이프라인", "pipeline"),
+            ("pipeline", "pipeline"),
+            ("sqlite", "sqlite"),
+            ("schema", "schema"),
+            ("webhook", "webhook"),
+            ("nim", "nim"),
+            ("message", "message"),
+            ("note", "note"),
+            ("conversation_state", "conversation_state"),
+            ("note_revision", "note_revision"),
+        )
+        for keyword, tag in tag_map:
+            if keyword in normalized and tag not in tags:
+                tags.append(tag)
+        if not tags:
+            tags = ["technical", "schema"]
+
+        title = "\uae30\uc220 \uba54\ubaa8"
+        if "ocr" in normalized and "image_file" in normalized and (
+            "\ud30c\uc774\ud504\ub77c\uc778" in normalized or "pipeline" in normalized
+        ):
+            title = "OCR \ud30c\uc774\ud504\ub77c\uc778 \uc800\uc7a5 \uad6c\uc870"
+        elif "webhook" in normalized and "fastapi" in normalized:
+            title = "FastAPI webhook \uad6c\uc870"
+        elif "conversation_state" in normalized:
+            title = "CONVERSATION_STATE \uad6c\uc870"
+
+        return TextAnalysisResult(
+            title=title,
+            summary=text.strip(),
+            tags=tags[:5],
+            category="note",
+            confidence=0.96,
+            raw_response='{"source":"deterministic_technical_note_statement"}',
+            is_note=True,
+            action="create",
+        )
+
+    @classmethod
+    def _extract_correction_intent(cls, text: str) -> CommandIntent | None:
+        normalized = cls._normalize_text(text)
+        if cls._list_command_mode(normalized) is not None:
+            return None
+        if "\ub9d0\uace0" in normalized and (
+            "\ubb50\uc788" in normalized
+            or "\ubb50 \uc788" in normalized
+            or "\ubb50\uc9c0" in normalized
+        ):
+            return None
+        patterns = (
+            r".*?\ub294\s+(?P<old>.+?)\s*(?:\uc774|\uac00)?\s*\uc544\ub2c8\ub77c\s+(?P<new>.+?)(?:\uc57c|\uc774\uc57c|\uc785\ub2c8\ub2e4)?(?:[.!?])?\s*(?:\uc218\uc815\ud574\uc918|\uc815\uc815\ud574\uc918|\uace0\uccd0\uc918|\ubc14\uafd4\uc918)?\s*$",
+            r"(?P<old>.+?)(?:\uc774|\uac00)?\s*\uc544\ub2c8\ub77c[,\s]+(?P<new>.+?)(?:\uc57c|\uc774\uc57c|\uc785\ub2c8\ub2e4)?(?:[.!?])?\s*(?:\uc218\uc815\ud574\uc918|\uc815\uc815\ud574\uc918|\uace0\uccd0\uc918|\ubc14\uafd4\uc918)?\s*$",
+            r"(?P<old>.+?)\s+(?:\uc774\s+\uc544\ub2c8\ub77c|\uac00\s+\uc544\ub2c8\ub77c|\uc544\ub2c8\ub77c|\uc544\ub2c8\uace0)\s+(?P<new>.+?)(?:\uc57c|\uc774\uc57c|\uc785\ub2c8\ub2e4)?(?:[.!?])?\s*(?:\uc218\uc815\ud574\uc918|\uc815\uc815\ud574\uc918|\uace0\uccd0\uc918|\ubc14\uafd4\uc918)?\s*$",
+            r"(?P<old>.+?)\s*(?:->|\u2192)\s*(?P<new>.+?)\s*(?:\uc218\uc815\ud574\uc918|\uc815\uc815\ud574\uc918|\uace0\uccd0\uc918|\ubc14\uafd4\uc918)?(?:[.!?])?\s*$",
+            r"(?P<old>.+?)\s+\ub9d0\uace0\s+(?P<new>.+?)(?:[.!?])?\s*(?:\uc218\uc815\ud574\uc918|\uc815\uc815\ud574\uc918|\uace0\uccd0\uc918|\ubc14\uafd4\uc918)?\s*$",
+            r"(?P<old>.+?)(?:\uc744|\ub97c)\s+(?P<new>.+?)\ub85c\s*(?:[.!?])?\s*(?:\uc218\uc815\ud574\uc918|\uc815\uc815\ud574\uc918|\uace0\uccd0\uc918|\ubc14\uafd4\uc918)?\s*$",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text.strip(), re.IGNORECASE)
+            if match:
+                return CommandIntent(
+                    name="correct_last_note",
+                    old_text=match.group("old").strip(" \"'"),
+                    new_text=cls._strip_correction_suffix(match.group("new")),
+                )
+        if not any(hint in normalized for hint in CORRECTION_HINTS):
+            return None
+        return CommandIntent(name="correct_last_note")
+
+    @staticmethod
+    def _strip_correction_suffix(value: str) -> str:
+        cleaned = value.strip(" \"'")
+        cleaned = re.sub(
+            r"\s*(?:\uc218\uc815\ud574\uc918|\uc815\uc815\ud574\uc918|\uace0\uccd0\uc918|\ubc14\uafd4\uc918|\uc218\uc815\ud574|\uc815\uc815\ud574)\s*$",
+            "",
+            cleaned,
+        )
+        cleaned = re.sub(r"(?:\uc57c|\uc774\uc57c|\uc785\ub2c8\ub2e4)\s*$", "", cleaned)
+        return cleaned.strip(" .!?\"'")
+
+    @staticmethod
+    def _extract_selection_index(normalized: str) -> int | None:
+        match = re.search(r"(\d+)\s*\ubc88", normalized)
+        if match:
+            return max(int(match.group(1)) - 1, 0)
+        return None
+
+    @staticmethod
+    def _clean_search_query(text: str) -> str:
+        cleaned = text
+        for phrase in (
+            "\ub0b4 \uba54\ubaa8\uc911\uc5d0",
+            "\uba54\ubaa8\uc911\uc5d0",
+            "\uc800\uc7a5\ud55c",
+            "\uc800\uc7a5\ub41c",
+            "\uad00\ub828 \uba54\ubaa8",
+            "\uad00\ub828\ub41c \uac70",
+            "\ubb50\uc788\ub354\ub77c",
+            "\ubb50 \uc788\ub354\ub77c",
+            "\ubb50 \uc788\uc9c0",
+            "\uc54c\ub824\uc918",
+            "\ubcf4\uc5ec\uc918",
+            "\ucc3e\uc544\uc918",
+            "\uac80\uc0c9",
+            "\uba54\ubaa8",
+            "\ub178\ud2b8",
+        ):
+            cleaned = cleaned.replace(phrase, " ")
+        compact = " ".join(cleaned.split()).strip()
+        return compact or text.strip()
+
+    @staticmethod
+    def _build_note_saved_message(
+        title: str,
+        summary: str,
+        action: str,
+        notion_status: str = "disabled",
+    ) -> str:
+        prefix = (
+            "\uae30\uc874 \uba54\ubaa8\uc5d0 \ub367\ubd99\uc600\uc5b4."
+            if action == "append"
+            else "\uba54\ubaa8\ub85c \uc800\uc7a5\ud588\uc5b4."
+        )
+        message = prefix
+        if summary:
+            message += f"\n\n\uc694\uc57d: {summary}"
+        if notion_status == "exported":
+            message += "\nNotion: \uc800\uc7a5\ud568"
+        elif notion_status == "failed":
+            message += "\nNotion: \uc800\uc7a5 \uc2e4\ud328"
+        return message
+
+    @staticmethod
+    def _build_search_results_message(notes: list[dict]) -> str:
+        lines = [f"\uad00\ub828 \uba54\ubaa8 {min(len(notes), 5)}\uac1c\ub97c \ucc3e\uc558\uc5b4."]
+        for index, note in enumerate(notes[:5], start=1):
+            title = str(note.get("title") or "\uc81c\ubaa9 \uc5c6\uc74c").strip()
+            summary = str(note.get("summary") or "").strip()
+            if summary:
+                lines.append(f"{index}. {title}\n{summary}")
+            else:
+                lines.append(f"{index}. {title}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_recent_notes_plain_message(notes: list[dict]) -> str:
+        if not notes:
+            return "\uc800\uc7a5\ub41c \ud56d\ubaa9\uc774 \uc544\uc9c1 \uc5c6\uc5b4."
+        lines = [f"\ucd5c\uadfc \uc800\uc7a5\ub41c \ud56d\ubaa9 {len(notes)}\uac1c\uc57c."]
+        for index, note in enumerate(notes, start=1):
+            title = str(note.get("title") or "\uc81c\ubaa9 \uc5c6\uc74c").strip()
+            summary = str(note.get("summary") or "").strip()
+            if summary:
+                lines.append(f"{index}. {title}\n{summary}")
+            else:
+                lines.append(f"{index}. {title}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_delete_confirmation_message(note: dict) -> str:
+        title = str(note.get("title") or "\uc81c\ubaa9 \uc5c6\uc74c").strip()
+        summary = str(note.get("summary") or "").strip()
+        message = "\uc774 \uba54\ubaa8\ub97c \uc0ad\uc81c\ud560\uae4c?"
+        message += f"\n\n\uc81c\ubaa9: {title}"
+        if summary:
+            message += f"\n\uc694\uc57d: {summary}"
+        message += "\n\n'\uc0ad\uc81c \ud655\uc778'\uc774\ub77c\uace0 \ubcf4\ub0b4\uba74 \uc0ad\uc81c\ud560\uac8c."
+        return message
+
+    @staticmethod
+    def _build_delete_completed_message(note: dict) -> str:
+        title = str(note.get("title") or "\uc81c\ubaa9 \uc5c6\uc74c").strip()
+        return f"\uba54\ubaa8\ub97c \uc0ad\uc81c\ud588\uc5b4.\n\n\uc81c\ubaa9: {title}"
+
+    @staticmethod
+    def _build_reference_choice_message(action_label: str, notes: list[dict]) -> str:
+        lines = [f"{action_label}\ud560 \uba54\ubaa8\uac00 \uc5ec\ub7ec \uac1c\uc57c. \ubc88\ud638\ub97c \ud3ec\ud568\ud574 \ub2e4\uc2dc \ubcf4\ub0b4\uc918."]
+        for index, note in enumerate(notes[:5], start=1):
+            title = str(note.get("title") or "\uc81c\ubaa9 \uc5c6\uc74c").strip()
+            summary = str(note.get("summary") or "").strip()
+            if summary:
+                lines.append(f"{index}\ubc88. {title}\n{summary}")
+            else:
+                lines.append(f"{index}\ubc88. {title}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_correction_success_message(
+        *,
+        title: str,
+        old_text: str,
+        new_text: str,
+        current_body: str,
+    ) -> str:
+        message = "\uc218\uc815\ud588\uc5b4."
+        if title:
+            message += f"\n\n\ub300\uc0c1: {title}"
+        message += f"\n\n\ubcc0\uacbd \uc804:\n{old_text}"
+        message += f"\n\n\ubcc0\uacbd \ud6c4:\n{new_text}"
+        message += f"\n\n\ud604\uc7ac \uc800\uc7a5\ub41c \uc804\uccb4 \ub0b4\uc6a9:\n{current_body}"
+        return message
+
+    @staticmethod
+    def _build_correction_miss_message(current_body: str) -> str:
+        message = "\uc218\uc815\ud560 \ubb38\uad6c\ub97c \ud604\uc7ac \uba54\ubaa8\uc5d0\uc11c \ucc3e\uc9c0 \ubabb\ud588\uc5b4."
+        if current_body:
+            message += f"\n\n\ud604\uc7ac \uc800\uc7a5\ub41c \ub0b4\uc6a9:\n{current_body}"
+        return message
+
+    def process_note_search(
+        self,
+        message_id: str,
+        chat_id: int | str,
+        query: str,
+        sender_id: int | str | None = None,
+    ) -> None:
         try:
             logger.info("Starting note search db_message_id=%s query=%r", message_id, query)
             notes = self.note_manager.search_notes(query, limit=10)
+            resolved_sender_id = self._resolve_sender_id(message_id, sender_id)
             if not notes:
                 self.note_manager.mark_processed(message_id)
+                self._remember_search_results(
+                    chat_id=str(chat_id),
+                    sender_id=resolved_sender_id,
+                    note_ids=[],
+                    query=query,
+                )
+                self._send_result_message(
+                    message_id,
+                    chat_id,
+                    "\uad00\ub828 \uba54\ubaa8\ub97c \ucc3e\uc9c0 \ubabb\ud588\uc5b4.",
+                    purpose="search_no_results",
+                )
+                return
                 self.telegram_client.send_message(
                     chat_id,
                     "관련 메모를 못 찾았어.",
                 )
                 return
 
-            try:
-                summary = self.nim_provider.summarize_note_search(query=query, notes=notes)
-            except NIMProviderError:
-                logger.exception("Failed to summarize note search db_message_id=%s", message_id)
-                summary = self._build_local_search_message(notes)
-
-            summary = self._sanitize_search_message(summary, notes)
+            self._remember_search_results(
+                chat_id=str(chat_id),
+                sender_id=resolved_sender_id,
+                note_ids=[str(note.get("id")) for note in notes if note.get("id")],
+                query=query,
+            )
             self.note_manager.mark_processed(message_id)
-            self.telegram_client.send_message(chat_id, summary)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                self._build_search_results_message(notes),
+                purpose="search_results",
+            )
             logger.info("Finished note search db_message_id=%s matches=%s", message_id, len(notes))
         except Exception:
             logger.exception("Failed to process note search db_message_id=%s", message_id)
@@ -723,14 +2038,55 @@ class UpdateRouter:
             )
             return None
 
+    def _send_message_safely(self, chat_id: int | str, text: str, *, purpose: str) -> bool:
+        try:
+            sent = self.telegram_client.send_message(chat_id, text)
+        except Exception:
+            logger.warning(
+                "Telegram send_message raised chat_id=%s purpose=%s",
+                chat_id,
+                purpose,
+                exc_info=True,
+            )
+            return False
+        if sent is False:
+            logger.warning(
+                "Telegram send_message failed chat_id=%s purpose=%s",
+                chat_id,
+                purpose,
+            )
+            return False
+        logger.info("Sent Telegram message chat_id=%s purpose=%s", chat_id, purpose)
+        return True
+
+    def _send_result_message(
+        self,
+        message_id: str,
+        chat_id: int | str,
+        text: str,
+        *,
+        purpose: str,
+    ) -> bool:
+        sent = self._send_message_safely(chat_id, text, purpose=purpose)
+        if not sent:
+            self.note_manager.mark_reply_failed(message_id)
+            logger.warning(
+                "Marked MESSAGE reply_failed db_message_id=%s purpose=%s",
+                message_id,
+                purpose,
+            )
+        return sent
+
     def process_photo_message(
         self,
         message_id: str,
         chat_id: int | str,
+        sender_id: int | str,
         telegram_message_id: int,
         photo: TelegramPhotoSize,
         caption: str | None,
     ) -> None:
+        reply_token = _CURRENT_REPLY_MESSAGE_ID.set(message_id)
         saved_image = None
         try:
             saved_image = self.image_archive.save_telegram_photo(
@@ -754,6 +2110,13 @@ class UpdateRouter:
                 analysis.is_note,
                 analysis.needs_user_clarification,
             )
+            self.note_manager.update_image_analysis(
+                saved_image.image_id,
+                ocr_text=analysis.ocr_text,
+                summary=analysis.summary,
+                image_type=analysis.category,
+                confidence=analysis.confidence,
+            )
 
             if analysis.needs_user_clarification or analysis.category == "unsure":
                 self.note_manager.mark_needs_review(message_id)
@@ -768,6 +2131,31 @@ class UpdateRouter:
                 self.telegram_client.send_message(chat_id, "일반 사진으로 보관했어.")
                 return
 
+            existing_note = self.note_manager.get_note_by_message_id(message_id)
+            if existing_note is not None:
+                self.note_manager.mark_processed(message_id)
+                self._remember_note_reference(
+                    chat_id=str(chat_id),
+                    sender_id=str(sender_id),
+                    note_id=str(existing_note.get("id")),
+                )
+                self.note_manager.set_conversation_state(
+                    chat_id=str(chat_id),
+                    sender_id=str(sender_id),
+                    key="last_image_note_id",
+                    value={"note_id": str(existing_note.get("id"))},
+                )
+                self._send_result_message(
+                    message_id,
+                    chat_id,
+                    "\uc774 \uc0ac\uc9c4\uc740 \uc774\ubbf8 \uba54\ubaa8\ub85c \uc800\uc7a5\ub418\uc5b4 \uc788\uc5b4.",
+                    purpose="image_duplicate_note",
+                )
+                return
+
+            if analysis.confidence < 0.55:
+                analysis = analysis.model_copy(update={"title": "OCR \ud655\uc778 \ud544\uc694 \uba54\ubaa8"})
+
             source_text = (analysis.ocr_text or caption or analysis.summary).strip()
             saved_note = self.note_manager.store_analysis_and_note(
                 message_id=message_id,
@@ -776,12 +2164,26 @@ class UpdateRouter:
                 source_text=source_text,
                 analysis=analysis,
             )
-            self.telegram_client.send_message(
+            self._remember_note_reference(
+                chat_id=str(chat_id),
+                sender_id=str(sender_id),
+                note_id=saved_note.note_id,
+            )
+            self.note_manager.set_conversation_state(
+                chat_id=str(chat_id),
+                sender_id=str(sender_id),
+                key="last_image_note_id",
+                value={"note_id": saved_note.note_id},
+            )
+            self._send_result_message(
+                message_id,
                 chat_id,
-                self._build_image_success_message(
+                self._build_image_saved_message(
+                    ocr_text=analysis.ocr_text,
                     summary=analysis.summary,
                     notion_status=saved_note.notion_status,
                 ),
+                purpose="image_note_saved",
             )
         except NIMProviderError as exc:
             logger.exception("Failed to process Telegram photo db_message_id=%s", message_id)
@@ -806,9 +2208,12 @@ class UpdateRouter:
                 chat_id,
                 "사진은 받았지만 처리 중에 실패했어. 다시 시도해줘.",
             )
+        finally:
+            _CURRENT_REPLY_MESSAGE_ID.reset(reply_token)
 
     @staticmethod
     def _build_success_message(
+        title: str,
         summary: str,
         action: str,
         notion_status: str = "disabled",
@@ -862,6 +2267,11 @@ class UpdateRouter:
         if not text:
             return False
         normalized = " ".join(text.strip().lower().split())
+        if any(
+            hint in normalized
+            for hint in ("\uac1c\uc218", "\uba87\uac1c", "\uba87 \uac1c", "\ucd1d \uba87")
+        ):
+            return "\uba54\ubaa8" in normalized or "\uc800\uc7a5\ub41c" in normalized
         if "메모" not in normalized:
             return False
         return any(hint in normalized for hint in NOTE_COUNT_HINTS)
@@ -1102,6 +2512,183 @@ class UpdateRouter:
         if "|" in normalized:
             return cls._build_local_search_message(notes)
         return normalized
+
+    """
+    @staticmethod
+    def _build_image_saved_message(
+        *,
+        ocr_text: str | None,
+        summary: str,
+        notion_status: str,
+    ) -> str:
+        message = "?ъ쭊 硫붾え濡???ν뻽??"
+        if ocr_text:
+            message += f"\n\n?쎌? ?댁슜:\n{ocr_text}"
+        message += f"\n\n?붿빟: {summary}"
+        if notion_status == "exported":
+            message += "\nNotion: ??ν븿"
+        elif notion_status == "failed":
+            message += "\nNotion: ????ㅽ뙣"
+        return message
+
+    @classmethod
+    def _detect_fast_read_intent(cls, text: str | None) -> str | None:
+        if not text:
+            return None
+        normalized = cls._normalize_text(text)
+        has_reference = any(hint in normalized for hint in FAST_READ_REFERENCE_HINTS)
+        has_read_content = any(hint in normalized for hint in FAST_READ_CONTENT_HINTS)
+        has_read_verb = any(verb in normalized for verb in ("알려줘", "보여줘"))
+        if has_reference and (has_read_content or has_read_verb):
+            return "read_last_note"
+        return None
+
+    def _legacy_fast_read_last_note(self, *, message_id: str, chat_id: int | str) -> None:
+        note = self.note_manager.get_last_note_for_chat(
+            str(chat_id),
+            prefer_image=True,
+            within_minutes=30,
+        )
+        self.note_manager.mark_processed(message_id)
+
+        if note is None:
+            self.telegram_client.send_message(chat_id, "최근 30분 안에 저장한 메모를 찾지 못했어.")
+            logger.info("Fast read found no recent note db_message_id=%s", message_id)
+            return
+
+        body = str(note.get("image_ocr_text") or note.get("body") or note.get("summary") or "").strip()
+        title = str(note.get("title") or "").strip()
+        summary = str(note.get("summary") or "").strip()
+        source_content_type = str(note.get("source_content_type") or "").strip()
+
+        lines = [
+            "방금 OCR로 저장된 메모는 이렇게 저장돼 있어."
+            if source_content_type == "photo"
+            else "방금 저장된 메모는 이렇게 저장돼 있어."
+        ]
+        if title:
+            lines.extend(("", f"[제목]\n{title}"))
+        if body:
+            lines.extend(("", f"[본문]\n{body}"))
+        if summary:
+            lines.extend(("", f"[요약]\n{summary}"))
+
+        self.telegram_client.send_message(chat_id, "\n".join(lines))
+        logger.info(
+            "Served fast read for recent note db_message_id=%s source_content_type=%s",
+            message_id,
+            source_content_type or "unknown",
+        )
+
+    """
+    @staticmethod
+    def _build_image_saved_message(
+        *,
+        ocr_text: str | None,
+        summary: str,
+        notion_status: str,
+    ) -> str:
+        message = "\uc0ac\uc9c4 \uba54\ubaa8\ub85c \uc800\uc7a5\ud588\uc5b4."
+        if ocr_text:
+            message += f"\n\n\uc77d\uc740 \ub0b4\uc6a9:\n{ocr_text}"
+        message += f"\n\n\uc694\uc57d: {summary}"
+        message += "\n\n\uc218\uc815 \uc608\uc2dc: '\ud2c0\ub9b0 \uae00\uc790 -> \ubc14\ub978 \uae00\uc790 \uc218\uc815\ud574\uc918.'"
+        if notion_status == "exported":
+            message += "\nNotion: \uc804\uc1a1\ud568"
+        elif notion_status == "failed":
+            message += "\nNotion: \uc804\uc1a1 \uc2e4\ud328"
+        return message
+
+    @classmethod
+    def _detect_fast_read_intent(cls, text: str | None) -> str | None:
+        if not text:
+            return None
+        normalized = cls._normalize_text(text)
+        if cls._list_command_mode(normalized) is not None:
+            return None
+        has_reference = any(
+            re.search(rf"(?<![\w\uac00-\ud7a3]){re.escape(hint)}", normalized)
+            for hint in FAST_READ_REFERENCE_HINTS
+        )
+        has_read_content = any(hint in normalized for hint in FAST_READ_CONTENT_HINTS)
+        has_read_verb = any(
+            verb in normalized
+            for verb in ("\uc54c\ub824\uc918", "\ubcf4\uc5ec\uc918")
+        )
+        if has_read_content and has_read_verb:
+            return "read_last_note"
+        if has_reference and (has_read_content or has_read_verb):
+            return "read_last_note"
+        return None
+
+    def _handle_fast_read_last_note(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        text: str,
+    ) -> None:
+        resolved = self._resolve_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            text=text,
+            prefer_image=True,
+        )
+        note = resolved.get("note")
+        candidates = resolved.get("candidates") or []
+        self.note_manager.mark_processed(message_id)
+
+        if candidates:
+            self._send_result_message(
+                message_id,
+                chat_id,
+                self._build_reference_choice_message(
+                    action_label="\uc870\ud68c",
+                    notes=candidates,
+                ),
+                purpose="read_reference_choice",
+            )
+            return
+
+        if not isinstance(note, dict):
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "\ucd5c\uadfc 30\ubd84 \uc548\uc5d0 \uc800\uc7a5\ud55c \uba54\ubaa8\ub97c \ucc3e\uc9c0 \ubabb\ud588\uc5b4.",
+                purpose="read_missing",
+            )
+            logger.info("Fast read found no recent note db_message_id=%s", message_id)
+            return
+
+        self._remember_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            note_id=str(note.get("id")),
+        )
+        body = str(note.get("image_ocr_text") or note.get("body") or note.get("summary") or "").strip()
+        title = str(note.get("title") or "").strip()
+        summary = str(note.get("summary") or "").strip()
+        source_content_type = str(note.get("source_content_type") or "").strip()
+
+        lines = [
+            "\ubc29\uae08 OCR\ub85c \uc800\uc7a5\ub41c \uba54\ubaa8\ub294 \uc774\ub807\uac8c \uc800\uc7a5\ub3fc \uc788\uc5b4."
+            if source_content_type == "photo"
+            else "\ubc29\uae08 \uc800\uc7a5\ub41c \uba54\ubaa8\ub294 \uc774\ub807\uac8c \uc800\uc7a5\ub3fc \uc788\uc5b4."
+        ]
+        if title:
+            lines.extend(("", "[\uc81c\ubaa9]\n" + title))
+        if body:
+            lines.extend(("", "[\ubcf8\ubb38]\n" + body))
+        if summary:
+            lines.extend(("", "[\uc694\uc57d]\n" + summary))
+        self._send_result_message(message_id, chat_id, "\n".join(lines), purpose="read_note")
+        logger.info(
+            "Served fast read for note db_message_id=%s note_id=%s source_content_type=%s llm_called=false",
+            message_id,
+            note.get("id"),
+            source_content_type or "unknown",
+        )
 
     @staticmethod
     def _looks_like_markdown_table(text: str) -> bool:
