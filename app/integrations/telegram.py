@@ -6,6 +6,18 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_BOT_COMMANDS: tuple[dict[str, str], ...] = (
+    {"command": "new", "description": "새 메모 생성"},
+    {"command": "add", "description": "기존 메모에 내용 추가"},
+    {"command": "list", "description": "메모 목록 보기"},
+    {"command": "show", "description": "메모 조회"},
+    {"command": "raw", "description": "원문/OCR 보기"},
+    {"command": "delete", "description": "메모 삭제 요청"},
+    {"command": "fix", "description": "메모 내용 수정 요청"},
+    {"command": "dedupe", "description": "중복 메모 정리"},
+    {"command": "help", "description": "사용법 보기"},
+)
+
 
 class TelegramClient:
     def __init__(self, bot_token: str, timeout: float = 10.0) -> None:
@@ -28,6 +40,20 @@ class TelegramClient:
                 chat_id,
                 exc,
             )
+            return False
+        return True
+
+    def set_my_commands(self, commands: tuple[dict[str, str], ...] = DEFAULT_BOT_COMMANDS) -> bool:
+        timeout = httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=3.0)
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                response = client.post(
+                    f"{self.base_url}/setMyCommands",
+                    json={"commands": list(commands)},
+                )
+                response.raise_for_status()
+        except (httpx.TimeoutException, httpx.HTTPError) as exc:
+            logger.warning("Failed to register Telegram bot commands error=%s", exc)
             return False
         return True
 

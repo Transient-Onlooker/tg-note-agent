@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -14,6 +15,8 @@ from app.services.image_archive import ImageArchive
 from app.services.nim_provider import NvidiaNIMProvider
 from app.services.note_manager import NoteManager
 from app.services.router import build_router
+
+logger = logging.getLogger(__name__)
 
 
 def get_required_env(name: str, default: str | None = None) -> str:
@@ -45,6 +48,10 @@ async def lifespan(app: FastAPI):
     telegram_client = TelegramClient(
         bot_token=get_required_env("TELEGRAM_BOT_TOKEN", "test-token")
     )
+    if telegram_client.set_my_commands():
+        logger.info("Registered Telegram bot commands")
+    else:
+        logger.warning("Telegram bot command registration failed; continuing startup")
     image_archive = ImageArchive(
         image_root=os.getenv("IMAGE_ROOT", "./images"),
         telegram_client=telegram_client,

@@ -212,6 +212,76 @@ def test_numbered_detail_request_reads_list_item_instead_of_saving(tmp_path: Pat
     assert "1번 본문 상세 내용" in telegram.messages[-1]["text"]
 
 
+def test_slash_new_creates_note_with_ai_metadata(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, EchoTextNIMProvider())
+
+    response = _post_text(client, message_id=1009, text="/new SLASH_NEW_0708. 새 메모 생성 테스트")
+
+    assert response.status_code == 200
+    notes = db.fetch_all("NOTE")
+    assert len(notes) == 1
+    assert notes[0]["body"] == "SLASH_NEW_0708. 새 메모 생성 테스트"
+    assert "메모로 저장했어" in telegram.messages[-1]["text"]
+
+
+def test_slash_list_show_delete_are_command_gate_only(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, FastPathForbiddenNIMProvider())
+    older_note_id = _insert_text_note(db, message_id="slash-1", title="대수 보고서", body="대수 본문")
+    newer_note_id = _insert_text_note(db, message_id="slash-2", title="확률 보고서", body="확률 본문")
+
+    response = _post_text(client, message_id=1010, text="/list")
+    assert response.status_code == 200
+    assert len(db.fetch_all("NOTE")) == 2
+    assert db.get_conversation_state(chat_id="777", sender_id="123", key="last_list_results") == {
+        "note_ids": [newer_note_id, older_note_id],
+    }
+
+    response = _post_text(client, message_id=1013, text="/show 2번 메모")
+    assert response.status_code == 200
+    assert len(db.fetch_all("NOTE")) == 2
+    assert "대수 본문" in telegram.messages[-1]["text"]
+
+    response = _post_text(client, message_id=1014, text="/delete 2번 메모")
+    assert response.status_code == 200
+    assert len(db.fetch_all("NOTE")) == 2
+    assert "삭제할까" in telegram.messages[-1]["text"]
+    assert db.get_conversation_state(chat_id="777", sender_id="123", key="pending_delete_note_id") == {
+        "note_id": older_note_id,
+    }
+
+
+def test_slash_mutating_commands_do_not_save_before_approval_flow_exists(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, FastPathForbiddenNIMProvider())
+    _insert_text_note(db, message_id="slash-3", title="대수 메모", body="대수 본문")
+
+    for offset, text in enumerate(
+        (
+            "/add 1번 메모에 후속 내용 추가",
+            "/fix 1번 메모의 대수를 확률과 통계로 수정",
+            "/dedupe 대수 관련 메모",
+        ),
+        start=1,
+    ):
+        response = _post_text(client, message_id=1020 + offset, text=text)
+        assert response.status_code == 200
+        assert len(db.fetch_all("NOTE")) == 1
+        assert "메모로 저장하지도 않았어" in telegram.messages[-1]["text"]
+
+
+def test_unknown_slash_command_is_not_saved_as_note(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, FastPathForbiddenNIMProvider())
+
+    response = _post_text(client, message_id=1025, text="/unknown 이건 저장되면 안 된다")
+
+    assert response.status_code == 200
+    assert len(db.fetch_all("NOTE")) == 0
+    assert "메모로 저장하진 않았어" in telegram.messages[-1]["text"]
+
+
 def test_full_list_command_has_priority_over_read_and_correction(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
     client, db, telegram = build_client(tmp_path, FastPathForbiddenNIMProvider())

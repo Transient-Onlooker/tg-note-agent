@@ -136,6 +136,17 @@ NUMBERED_DETAIL_HINTS = (
     "\uc54c\ub824\ub2ec",
     "\uc124\uba85",
 )
+SLASH_COMMAND_NAMES = {
+    "new",
+    "add",
+    "list",
+    "show",
+    "raw",
+    "delete",
+    "fix",
+    "dedupe",
+    "help",
+}
 NOTE_COMMAND_HINTS = (
     "\uba54\ubaa8",
     "\ub178\ud2b8",
@@ -804,6 +815,12 @@ class UpdateRouter:
         if not normalized:
             return None
 
+        slash_command = self._extract_slash_command(text)
+        if slash_command is not None:
+            command_name, argument = slash_command
+            if command_name in SLASH_COMMAND_NAMES:
+                return CommandIntent(name=f"slash_{command_name}", query=argument)
+
         if any(hint == normalized for hint in DELETE_CONFIRM_HINTS):
             return CommandIntent(name="delete_confirm")
 
@@ -860,6 +877,15 @@ class UpdateRouter:
             message_id,
             command.name,
         )
+        if command.name.startswith("slash_"):
+            return self._handle_slash_command(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                command_name=command.name.removeprefix("slash_"),
+                argument=command.query or "",
+            )
+
         if command.name == "read_last_note":
             self._clear_correction_state(chat_id=str(chat_id), sender_id=sender_id)
             self._handle_fast_read_last_note(
@@ -959,6 +985,195 @@ class UpdateRouter:
             )
 
         return False
+
+    def _handle_slash_command(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        command_name: str,
+        argument: str,
+    ) -> bool:
+        argument = argument.strip()
+        if command_name == "new":
+            return self._handle_slash_new_note(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                text=argument,
+            )
+        if command_name == "list":
+            return self._handle_slash_list(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                query=argument,
+            )
+        if command_name in {"show", "raw"}:
+            return self._handle_slash_show(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                text=argument,
+            )
+        if command_name == "delete":
+            return self._handle_delete_request(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                text=argument,
+            )
+        if command_name in {"add", "fix", "dedupe"}:
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                self._build_pending_action_not_ready_message(command_name),
+                purpose=f"slash_{command_name}_not_ready",
+            )
+            return True
+        if command_name == "help":
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                self._build_slash_help_message(argument),
+                purpose="slash_help",
+            )
+            return True
+        return False
+
+    def _handle_slash_new_note(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        text: str,
+    ) -> bool:
+        if not text:
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "새 메모 내용을 같이 보내줘. 예: /new 오늘 회의에서 v1 테스트를 먼저 하기로 함",
+                purpose="slash_new_missing_body",
+            )
+            return True
+
+        existing_tags = self.note_manager.list_tags()
+        candidate_notes = self.note_manager.search_notes(text, limit=5)
+        conversation_context = self.note_manager.recent_chat_messages(
+            str(chat_id),
+            limit=8,
+            max_age_minutes=30,
+            exclude_message_id=message_id,
+        )
+        try:
+            analysis = self.nim_provider.analyze_text(
+                text,
+                existing_tags=existing_tags,
+                candidate_notes=candidate_notes,
+                conversation_context=conversation_context,
+                action="create",
+                target_note_id=None,
+            )
+            if analysis.is_note is False or analysis.action == "ignore":
+                analysis = self._build_explicit_save_fallback_analysis(
+                    text,
+                    action="create",
+                    target_note_id=None,
+                )
+            else:
+                analysis = self._normalize_explicit_save_analysis(analysis, text)
+        except NIMProviderError:
+            logger.exception("Failed to generate slash /new note metadata db_message_id=%s", message_id)
+            analysis = self.nim_provider.build_fallback_note_analysis(
+                text,
+                action="create",
+                target_note_id=None,
+            )
+
+        saved_note = self.note_manager.store_analysis_and_note(
+            message_id=message_id,
+            provider_name="nvidia_nim",
+            model_name=self.nim_provider.text_model,
+            source_text=text,
+            analysis=analysis,
+            existing_note_id=None,
+        )
+        self._remember_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            note_id=saved_note.note_id,
+        )
+        self.note_manager.set_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="last_selected_note_id",
+            value={"note_id": saved_note.note_id},
+        )
+        self._send_result_message(
+            message_id,
+            chat_id,
+            self._build_note_saved_message(
+                analysis.title,
+                analysis.summary,
+                saved_note.action,
+                saved_note.notion_status,
+            ),
+            purpose="slash_new_saved",
+        )
+        return True
+
+    def _handle_slash_list(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        query: str,
+    ) -> bool:
+        if query:
+            notes = self.note_manager.search_notes(query, limit=10)
+            self._remember_search_results(
+                chat_id=str(chat_id),
+                sender_id=sender_id,
+                note_ids=[str(note.get("id")) for note in notes if note.get("id")],
+                query=query,
+            )
+            message = self._build_search_results_message(notes) if notes else "관련 메모를 찾지 못했어."
+            purpose = "slash_list_search"
+        else:
+            notes = self.note_manager.recent_notes(limit=10)
+            self._remember_list_results(
+                chat_id=str(chat_id),
+                sender_id=sender_id,
+                note_ids=[str(note.get("id")) for note in notes if note.get("id")],
+            )
+            message = self._build_recent_notes_plain_message(notes)
+            purpose = "slash_list_recent"
+        self.note_manager.mark_processed(message_id)
+        self._send_result_message(message_id, chat_id, message, purpose=purpose)
+        return True
+
+    def _handle_slash_show(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        text: str,
+    ) -> bool:
+        read_text = text or "방금 메모 원문 보여줘"
+        self._handle_fast_read_last_note(
+            message_id=message_id,
+            chat_id=chat_id,
+            sender_id=sender_id,
+            text=read_text,
+        )
+        return True
 
     def _handle_delete_request(
         self,
@@ -1571,6 +1786,8 @@ class UpdateRouter:
         normalized = cls._normalize_text(text)
         if not normalized:
             return False
+        if normalized.startswith("/"):
+            return True
         if cls._list_command_mode(normalized) is not None:
             return True
         if cls._looks_like_duplicate_delete_request(normalized):
@@ -1869,6 +2086,13 @@ class UpdateRouter:
         return any(re.match(pattern, normalized) for pattern in patterns)
 
     @staticmethod
+    def _extract_slash_command(text: str) -> tuple[str, str] | None:
+        match = re.match(r"^/([A-Za-z0-9_]{1,32})(?:@[A-Za-z0-9_]+)?(?:\s+(.*))?$", text.strip(), flags=re.DOTALL)
+        if not match:
+            return None
+        return match.group(1).lower(), (match.group(2) or "").strip()
+
+    @staticmethod
     def _prepare_text_for_note_save(text: str) -> str:
         cleaned = text.strip()
         patterns = (
@@ -1979,6 +2203,51 @@ class UpdateRouter:
             else:
                 lines.append(f"{index}\ubc88. {title}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _build_pending_action_not_ready_message(command_name: str) -> str:
+        examples = {
+            "add": "/add 5번 메모에 후속 작업 추가",
+            "fix": "/fix 5번 메모의 대수를 확률과 통계로 수정",
+            "dedupe": "/dedupe 대수 관련 메모",
+        }
+        example = examples.get(command_name, f"/{command_name}")
+        return (
+            f"/{command_name} 명령은 기존 메모를 바꾸는 작업이라 승인 단계가 필요해.\n\n"
+            "지금은 안전하게 실행하지 않았고, 메모로 저장하지도 않았어.\n"
+            f"예상 형식: {example}\n\n"
+            "다음 구현 단계에서 후보/변경 preview를 보여준 뒤 '승인'을 받아 실행하게 만들 거야."
+        )
+
+    @staticmethod
+    def _build_slash_help_message(topic: str = "") -> str:
+        topic = topic.strip().lower()
+        if topic in {"new", "add", "list", "show", "raw", "delete", "fix", "dedupe"}:
+            details = {
+                "new": "/new 새 메모 내용\n새 NOTE를 바로 생성해. 예: /new 오늘 회의에서 v1 테스트를 먼저 하기로 함",
+                "add": "/add 대상 + 추가 내용\n기존 NOTE append용. 승인 preview 구현 후 실행 예정.",
+                "list": "/list [검색어]\n최근 메모 또는 검색 결과를 보여줘. 예: /list 대수",
+                "show": "/show 대상\n메모 상세를 보여줘. 예: /show 5번 메모, /show 대수 보고서 관련 메모",
+                "raw": "/raw 대상\n본문 또는 OCR 원문을 보여줘. 예: /raw 5번",
+                "delete": "/delete 대상\n삭제 대상을 찾고 확인을 받은 뒤 soft delete해.",
+                "fix": "/fix 대상 + 수정 지시\n기존 NOTE 수정용. 승인 preview 구현 후 실행 예정.",
+                "dedupe": "/dedupe [범위]\n중복 후보를 찾고 승인 후 정리하는 명령. 승인 preview 구현 후 실행 예정.",
+            }
+            return details[topic]
+        return "\n".join(
+            [
+                "사용 가능한 명령:",
+                "/new 새 메모 내용",
+                "/add 기존 메모에 추가할 내용",
+                "/list [검색어]",
+                "/show 대상",
+                "/raw 대상",
+                "/delete 대상",
+                "/fix 대상 + 수정 지시",
+                "/dedupe [범위]",
+                "/help [명령어]",
+            ]
+        )
 
     @staticmethod
     def _build_correction_success_message(
