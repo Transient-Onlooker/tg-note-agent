@@ -130,6 +130,19 @@ class NoteManager:
             within_minutes=within_minutes,
         )
 
+    def find_duplicate_notes_by_body(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        limit: int = 200,
+    ) -> list[dict]:
+        return self.db.find_duplicate_notes_by_body(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            limit=limit,
+        )
+
     def get_last_note_for_chat(
         self,
         chat_id: str,

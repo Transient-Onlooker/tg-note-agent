@@ -330,6 +330,49 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
+    def find_duplicate_notes_by_body(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT NOTE.*
+                FROM NOTE
+                JOIN MESSAGE ON MESSAGE.id = NOTE.message_id
+                WHERE MESSAGE.chat_id = ?
+                  AND MESSAGE.sender_id = ?
+                  AND NOTE.deleted_at IS NULL
+                ORDER BY NOTE.created_at DESC
+                LIMIT ?
+                """,
+                (chat_id, sender_id, limit),
+            ).fetchall()
+
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            note = dict(row)
+            normalized_body = " ".join(str(note.get("body") or "").split())
+            if not normalized_body:
+                continue
+            grouped.setdefault(normalized_body, []).append(note)
+
+        duplicates: list[dict[str, Any]] = []
+        for body, notes in grouped.items():
+            if len(notes) < 2:
+                continue
+            duplicates.append(
+                {
+                    "body": body,
+                    "keep_note": notes[0],
+                    "duplicate_notes": notes[1:],
+                }
+            )
+        return duplicates
+
     def recent_chat_messages(
         self,
         *,

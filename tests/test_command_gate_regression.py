@@ -293,6 +293,32 @@ def test_delete_request_and_confirm_are_idempotent(tmp_path: Path, monkeypatch) 
     assert "삭제 대기" in telegram.messages[-1]["text"]
 
 
+def test_duplicate_delete_request_does_not_save_command_as_note(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, FastPathForbiddenNIMProvider())
+    duplicate_body = "DUPLICATE_DELETE_BODY_0708. exact duplicate"
+    _insert_text_note(db, message_id="duplicate-source-1", title="old duplicate", body=duplicate_body)
+    _insert_text_note(db, message_id="duplicate-source-2", title="new duplicate", body=duplicate_body)
+    _insert_text_note(db, message_id="unique-source", title="unique", body="unique body")
+
+    response = _post_text(
+        client,
+        message_id=1025,
+        text="\uc911\ubcf5\ub41c \uba54\ubaa8 \uc0ad\uc81c\ud574\uc918 \uc9c0\uae08 \uba54\ubaa8\ub4e4\uc911\uc5d0.",
+    )
+
+    assert response.status_code == 200
+    notes = db.fetch_all("NOTE")
+    active_notes = [note for note in notes if note["deleted_at"] is None]
+    deleted_notes = [note for note in notes if note["deleted_at"] is not None]
+    assert len(notes) == 3
+    assert len(active_notes) == 2
+    assert len(deleted_notes) == 1
+    assert deleted_notes[0]["body"] == duplicate_body
+    assert not any(note["body"].startswith("\uc911\ubcf5\ub41c \uba54\ubaa8") for note in notes)
+    assert "\uc911\ubcf5 \uba54\ubaa8 1\uac1c" in telegram.messages[-1]["text"]
+
+
 def test_ocr_correction_updates_note_and_image_without_llm(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
     client, db, telegram = build_client(tmp_path, FastPathForbiddenNIMProvider())

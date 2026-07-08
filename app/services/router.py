@@ -104,6 +104,7 @@ FAST_READ_CONTENT_HINTS = (
     "\ubcf8\ubb38",
 )
 DELETE_HINTS = ("\uc0ad\uc81c", "\uc9c0\uc6cc", "\uc5c6\uc560")
+DUPLICATE_HINTS = ("\uc911\ubcf5", "\uac19\uc740 \uba54\ubaa8", "\uac19\uc740 \ub178\ud2b8", "\uacb9\uce5c")
 DELETE_CONFIRM_HINTS = (
     "\uc0ad\uc81c \ud655\uc778",
     "\uc815\ub9d0 \uc0ad\uc81c",
@@ -813,6 +814,9 @@ class UpdateRouter:
         if self._is_note_count_request(text):
             return CommandIntent(name="count_notes")
 
+        if self._looks_like_duplicate_delete_request(normalized):
+            return CommandIntent(name="delete_duplicates_request")
+
         if self._extract_selection_index(normalized) is not None and "\uc218\uc815" in normalized:
             return CommandIntent(name="correct_last_note")
 
@@ -921,6 +925,13 @@ class UpdateRouter:
                 text=text,
             )
 
+        if command.name == "delete_duplicates_request":
+            return self._handle_duplicate_delete_request(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+            )
+
         if command.name == "delete_confirm":
             return self._handle_delete_confirm(
                 message_id=message_id,
@@ -992,6 +1003,57 @@ class UpdateRouter:
             chat_id,
             self._build_delete_confirmation_message(note),
             purpose="delete_confirmation",
+        )
+        return True
+
+    def _handle_duplicate_delete_request(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+    ) -> bool:
+        duplicate_groups = self.note_manager.find_duplicate_notes_by_body(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+        )
+        if not duplicate_groups:
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "\uc911\ubcf5\ub41c \uba54\ubaa8\ub97c \ucc3e\uc9c0 \ubabb\ud588\uc5b4. \uc9c0\uae08\uc740 \ubcf8\ubb38\uc774 \uc815\ud655\ud788 \uac19\uc740 \uba54\ubaa8\ub9cc \uc911\ubcf5\uc73c\ub85c \ubcf4\uace0 \uc0ad\uc81c\ud574.",
+                purpose="duplicate_delete_none",
+            )
+            return True
+
+        deleted_count = 0
+        kept_titles: list[str] = []
+        for group in duplicate_groups:
+            keep_note = group.get("keep_note") or {}
+            keep_title = str(keep_note.get("title") or "\uc81c\ubaa9 \uc5c6\uc74c").strip()
+            if keep_title:
+                kept_titles.append(keep_title)
+            for duplicate_note in group.get("duplicate_notes") or []:
+                note_id = duplicate_note.get("id")
+                if not note_id:
+                    continue
+                self.note_manager.delete_note(str(note_id), reason="duplicate_body_cleanup")
+                deleted_count += 1
+
+        self.note_manager.mark_processed(message_id)
+        self._clear_correction_state(chat_id=str(chat_id), sender_id=sender_id)
+        lines = [
+            f"\uc911\ubcf5 \uba54\ubaa8 {deleted_count}\uac1c\ub97c \uc0ad\uc81c\ud588\uc5b4.",
+            "\ubcf8\ubb38\uc774 \uc815\ud655\ud788 \uac19\uc740 \uba54\ubaa8\ub9cc \ub300\uc0c1\uc73c\ub85c \ud588\uace0, \uac01 \uadf8\ub8f9\uc758 \ucd5c\uc2e0 \uba54\ubaa8\ub294 \ub0a8\uacbc\uc5b4.",
+        ]
+        if kept_titles:
+            lines.append("\ub0a8\uae34 \uba54\ubaa8: " + ", ".join(kept_titles[:3]))
+        self._send_result_message(
+            message_id,
+            chat_id,
+            "\n".join(lines),
+            purpose="duplicate_delete_completed",
         )
         return True
 
@@ -1472,6 +1534,13 @@ class UpdateRouter:
         return has_delete and has_reference
 
     @staticmethod
+    def _looks_like_duplicate_delete_request(normalized: str) -> bool:
+        has_delete = any(hint in normalized for hint in DELETE_HINTS)
+        has_duplicate = any(hint in normalized for hint in DUPLICATE_HINTS)
+        has_note = any(hint in normalized for hint in NOTE_COMMAND_HINTS)
+        return has_delete and has_duplicate and has_note
+
+    @staticmethod
     def _looks_like_numbered_read_request(normalized: str) -> bool:
         if not re.search(r"\d+\s*\ubc88", normalized):
             return False
@@ -1493,6 +1562,8 @@ class UpdateRouter:
         if not normalized:
             return False
         if cls._list_command_mode(normalized) is not None:
+            return True
+        if cls._looks_like_duplicate_delete_request(normalized):
             return True
         if cls._looks_like_delete_request(normalized):
             return True
