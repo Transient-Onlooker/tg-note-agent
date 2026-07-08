@@ -48,7 +48,7 @@ class NvidiaNIMProvider:
         self.timeout = timeout
         self.router_timeout_seconds = router_timeout_seconds
         self.text_timeout_seconds = text_timeout_seconds
-        self.max_tokens = max_tokens
+        self.max_tokens = max(128, min(max_tokens, 2000))
 
     def route_text(
         self,
@@ -204,6 +204,8 @@ class NvidiaNIMProvider:
                         "summary must always be Korean, even if the source text mixes English and Korean. "
                         "Preserve the user's stated meaning; do not reinterpret test sentences as tasks, bug reports, or requirements unless the user explicitly asks to create a task. "
                         "If the source text is already a short single-sentence note, the summary may closely mirror the source text. "
+                        "If the source text is longer than one sentence, summary must be an abstractive 1-2 sentence Korean summary, not a copied prefix or truncated excerpt. "
+                        "For long source text, compress the central meaning and omit examples unless they are essential. "
                         "tags must be an array of short strings. "
                         "confidence must be a number between 0 and 1. "
                         "Prefer reusing existing tags when they already match the content. "
@@ -602,7 +604,13 @@ class NvidiaNIMProvider:
                     raise NIMProviderError(
                         f"NIM API error {response.status_code}: {response.text[:500]}"
                     )
-                return response.json()
+                data = response.json()
+                choices = data.get("choices")
+                if not isinstance(choices, list) or not choices:
+                    raise NIMProviderError(
+                        f"NIM returned no choices for model={model_name}: {json.dumps(data, ensure_ascii=False)[:500]}"
+                    )
+                return data
         except httpx.ReadTimeout as exc:
             elapsed = time.perf_counter() - started_at
             raise NIMProviderError(
@@ -779,7 +787,7 @@ class NvidiaNIMProvider:
         raw_response: str,
     ) -> TextAnalysisResult:
         cleaned = " ".join(source_text.split()).strip()
-        summary = cleaned[:120] if cleaned else self._fallback_summary(source_text)
+        summary = "AI 요약 생성에 실패했어. 원문을 확인해줘." if cleaned else self._fallback_summary(source_text)
         return TextAnalysisResult(
             title=self._fallback_title(source_text),
             summary=summary,

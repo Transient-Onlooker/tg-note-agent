@@ -18,6 +18,13 @@ Telegram webhook based personal note agent.
 - Notion sync is optional and still secondary to local SQLite storage.
 - Long multi-step agent behavior is intentionally bounded; deterministic commands should stay in the command gate.
 
+## Current Issues To Fix Next
+
+- `/fix` currently recognizes the command but does not execute edits yet. Implement candidate selection, change preview, and explicit approval before mutating an existing note.
+- Note metadata generation can still accept poor model output. Add validation so unrelated AI titles/summaries are rejected instead of being saved as if they were valid summaries.
+- Saved-note summaries must be actual AI summaries, not prefix truncation. If AI metadata fails, the bot should say that summary generation failed and store only the cleaned body.
+- Continue with narrow, targeted tests for the changed command/provider paths instead of running the whole suite after every small change.
+
 ## Architecture
 
 Current implementation and next target diagrams:
@@ -34,9 +41,9 @@ Copy `.env.example` to `.env` and set:
 - `TELEGRAM_ALLOWED_USER_IDS`
 - `NIM_API_KEY`
 - `NIM_BASE_URL`
-- `NIM_TEXT_MODEL` (`minimaxai/minimax-m2.7` recommended default)
+- `NIM_TEXT_MODEL` (`z-ai/glm-5.2` current local default; `minimaxai/minimax-m2.7` is also supported)
 - `NIM_TIMEOUT_SECONDS`
-- `NIM_MAX_TOKENS` (`900000` default fallback)
+- `NIM_MAX_TOKENS` (`900` recommended output cap for metadata JSON; this is not the input context limit)
 - `NIM_VISION_MODEL`
 - `NOTION_API_KEY`
 - `NOTION_NOTES_DATABASE_ID` or `NOTION_PARENT_PAGE_ID`

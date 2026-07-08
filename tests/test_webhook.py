@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from app.integrations.notion import NotionExportResult
@@ -451,6 +452,67 @@ def test_nim_provider_uses_task_specific_timeouts(tmp_path: Path, monkeypatch) -
         {"model_name": "text-model", "read_timeout": 12.0},
         {"model_name": "vision-model", "read_timeout": 120.0},
     ]
+
+
+def test_nim_provider_clamps_excessive_max_tokens() -> None:
+    provider = NvidiaNIMProvider(
+        api_key="test-key",
+        base_url="https://example.com/v1",
+        model="text-model",
+        max_tokens=900000,
+    )
+
+    assert provider.max_tokens == 2000
+
+
+def test_nim_provider_rejects_empty_choices(monkeypatch) -> None:
+    provider = NvidiaNIMProvider(
+        api_key="test-key",
+        base_url="https://example.com/v1",
+        model="text-model",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "",
+                "choices": [],
+                "created": 0,
+                "model": "",
+                "object": "chat.completion",
+            },
+        )
+
+    original_client = httpx.Client
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        provider._post_completion(
+            {"model": "text-model", "messages": []},
+            model_name="text-model",
+        )
+
+    assert "no choices" in str(exc_info.value)
+
+
+def test_degraded_note_summary_does_not_masquerade_as_ai_summary() -> None:
+    provider = NvidiaNIMProvider(
+        api_key="test-key",
+        base_url="https://example.com/v1",
+        model="text-model",
+    )
+
+    result = provider.build_fallback_note_analysis(
+        "확률과 통계는 불확실한 사건을 수치로 분석하고 자료를 바탕으로 결론을 내리는 학문이다.",
+    )
+
+    assert result.summary == "AI 요약 생성에 실패했어. 원문을 확인해줘."
+    assert result.confidence == 0.05
 
 
 def build_client(

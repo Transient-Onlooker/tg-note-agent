@@ -41,9 +41,9 @@ async def lifespan(app: FastAPI):
         text_model=get_required_env("NIM_TEXT_MODEL", "z-ai/glm-5.2"),
         vision_model=os.getenv("NIM_VISION_MODEL", "").strip() or None,
         router_timeout_seconds=float(os.getenv("NIM_ROUTER_TIMEOUT_SECONDS", "12")),
-        text_timeout_seconds=float(os.getenv("NIM_TEXT_TIMEOUT_SECONDS", "45")),
+        text_timeout_seconds=float(os.getenv("NIM_TEXT_TIMEOUT_SECONDS", "120")),
         timeout=float(os.getenv("NIM_TIMEOUT_SECONDS", "30")),
-        max_tokens=int(os.getenv("NIM_MAX_TOKENS", "900000")),
+        max_tokens=int(os.getenv("NIM_MAX_TOKENS", "900")),
     )
     telegram_client = TelegramClient(
         bot_token=get_required_env("TELEGRAM_BOT_TOKEN", "test-token")

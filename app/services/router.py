@@ -2142,7 +2142,9 @@ class UpdateRouter:
             else "\uba54\ubaa8\ub85c \uc800\uc7a5\ud588\uc5b4."
         )
         message = prefix
-        if summary:
+        if summary == "AI 요약 생성에 실패했어. 원문을 확인해줘.":
+            message += "\n\nAI 요약 생성에 실패해서 원문만 저장했어."
+        elif summary:
             message += f"\n\n\uc694\uc57d: {summary}"
         if notion_status == "exported":
             message += "\nNotion: \uc800\uc7a5\ud568"
