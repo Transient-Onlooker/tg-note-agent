@@ -6,6 +6,9 @@ This document reflects the current hybrid implementation:
 - Immediate ACK failure is logged only, while MESSAGE storage and background processing continue.
 - Result reply failure is logged and recorded as `MESSAGE.status=reply_failed`.
 - Deterministic command gate runs before AI routing for read, search, recent, count, correction, delete, and numbered references.
+- Target slash-command layer pins command intent while allowing flexible AI/DB-assisted argument resolution. `/new` creates a note; `/add` appends to an existing note.
+- Existing-note mutations require approval: `/add`, `/fix`, `/delete`, and `/dedupe` must show a preview or target list before execution.
+- Broad list/show results should paginate at 10 items per page and keep page state in `CONVERSATION_STATE`.
 - AI routing is used only after command-gate miss, with a safety net preventing meta commands from becoming NOTE create/append.
 - Explicit save prefixes such as `메모로 저장해줘:` are stripped before AI routing and NOTE persistence.
 - Correction records `NOTE_REVISION` and can update `NOTE.title`, `NOTE.summary`, `NOTE.body`, `IMAGE_FILE.ocr_text`, and `IMAGE_FILE.summary`.
@@ -24,6 +27,7 @@ flowchart LR
     API --> Router["UpdateRouter"]
     Router --> Outbound["Best-effort outbound<br/>ACK + result replies"]
     Outbound --> ReplyFailed["send failure logs warning<br/>result failure sets reply_failed"]
+    Router --> Slash["Slash command layer<br/>/new /add /list /show /raw<br/>/fix /delete /dedupe /help"]
     Router --> Gate["Command gate first<br/>read / search / recent / count<br/>correction / delete / numbered reference"]
     Router --> Prep["Save text preparation<br/>strip explicit save prefixes"]
     Router --> BG["BackgroundTasks"]
@@ -32,7 +36,8 @@ flowchart LR
     Prep --> BG
     BG --> NIM["NVIDIA NIM<br/>router + text + vision"]
 
-    Gate --> State["CONVERSATION_STATE<br/>last_list_results / last_search_results<br/>last_selected_note_id / last_image_note_id / pending_delete"]
+    Slash --> State
+    Gate --> State["CONVERSATION_STATE<br/>last_list_results / last_search_results<br/>page_state / pending_action<br/>last_selected_note_id / last_image_note_id / pending_delete"]
     Gate --> Revision["NOTE_REVISION"]
     Archive --> DB
     Archive --> TGFile["Telegram file API"]
@@ -69,7 +74,19 @@ sequenceDiagram
 
     alt command gate hit
         R->>D: read CONVERSATION_STATE
-        alt numbered reference
+        alt slash command
+            R->>R: fix intent from command name
+            R->>D: resolve flexible argument with DB search or AI helper
+            alt /new
+                R->>D: create NOTE without approval
+            else mutating existing note
+                R->>D: store pending_action preview
+                R-->>T: best-effort approval request
+            else list/show over 10 results
+                R->>D: store page_state
+                R-->>T: best-effort page reply
+            end
+        else numbered reference
             R->>D: resolve last_list_results then last_search_results
             R->>D: set last_selected_note_id
         else read / search / recent / count
@@ -141,7 +158,7 @@ erDiagram
         string chat_id PK
         string sender_id PK
         string key PK
-        text value_json "last_list_results|last_search_results|last_selected_note_id|last_image_note_id|pending_delete_note_id"
+        text value_json "last_list_results|last_search_results|page_state|pending_action|last_selected_note_id|last_image_note_id|pending_delete_note_id"
         datetime updated_at
     }
 
@@ -165,6 +182,10 @@ erDiagram
 flowchart TD
     In["Telegram input"] --> Store["Store MESSAGE"]
     Store --> Gate{"Command gate first"}
+    Gate -->|Slash command| Slash["Pin intent by command<br/>resolve flexible argument"]
+    Slash -->|/new| New["Create new NOTE"]
+    Slash -->|/add /fix /delete /dedupe| Approve["Store pending_action<br/>preview + approval required"]
+    Slash -->|/list /show over 10| Page["Paginated result<br/>page_state + /next /prev"]
     Gate -->|Read/Search/Recent/Count| Read["DB-only answer"]
     Gate -->|Numbered reference| Select["Resolve list/search state<br/>set selected note"]
     Gate -->|Correction| Correct["NOTE_REVISION<br/>NOTE title/summary/body<br/>IMAGE_FILE ocr/summary"]
@@ -181,6 +202,9 @@ flowchart TD
     Correct --> Reply
     Delete --> Reply
     Save --> Reply
+    New --> Reply
+    Approve --> Reply
+    Page --> Reply
     Reuse --> Reply
     NewImageNote --> Reply
     Reply --> Fail{"sendMessage failed?"}

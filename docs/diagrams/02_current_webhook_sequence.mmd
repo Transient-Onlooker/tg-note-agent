@@ -31,7 +31,19 @@ sequenceDiagram
             alt text flow
                 R->>D: load CONVERSATION_STATE
                 alt deterministic command gate before AI
-                    alt numbered reference
+                    alt slash command
+                        R->>R: pin intent from command name
+                        R->>D: resolve flexible argument with DB search or AI helper
+                        alt /new
+                            R->>D: create NOTE without approval
+                        else mutating existing note
+                            R->>D: store pending_action preview
+                            R-->>T: best-effort approval request
+                        else list/show over 10 results
+                            R->>D: store page_state
+                            R-->>T: best-effort page reply
+                        end
+                    else numbered reference
                         R->>D: resolve from last_list_results then last_search_results
                         R->>D: set last_selected_note_id
                         R->>D: update MESSAGE(status=processed)

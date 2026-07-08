@@ -127,6 +127,15 @@ SEARCH_VERBS = (
     "\ubb50 \uc788",
     "\ubb50\uc788",
 )
+NUMBERED_DETAIL_HINTS = (
+    "\uc880\ub354",
+    "\uc880 \ub354",
+    "\uc790\uc138\ud788",
+    "\uc0c1\uc138",
+    "\ub354 \uc54c\ub824",
+    "\uc54c\ub824\ub2ec",
+    "\uc124\uba85",
+)
 NOTE_COMMAND_HINTS = (
     "\uba54\ubaa8",
     "\ub178\ud2b8",
@@ -1546,7 +1555,8 @@ class UpdateRouter:
             return False
         has_note = "\uba54\ubaa8" in normalized or "\ub178\ud2b8" in normalized
         has_read = any(hint in normalized for hint in FAST_READ_CONTENT_HINTS + SEARCH_VERBS)
-        return has_note and has_read
+        has_detail = any(hint in normalized for hint in NUMBERED_DETAIL_HINTS)
+        return has_detail or (has_note and has_read)
 
     @staticmethod
     def _looks_like_numbered_select_request(normalized: str) -> bool:
@@ -1789,17 +1799,14 @@ class UpdateRouter:
         title = (analysis.title or "").strip()
         summary = (analysis.summary or "").strip()
         source = source_text.strip()
-        anchor = UpdateRouter._extract_explicit_save_anchor(source)
-        rewritten_intent_markers = (
-            "\uc218\uc815\ud574\uc57c",
-            "\ud574\uc57c \ud55c\ub2e4",
-            "\ud655\uc778\ub428",
-            "\ud14c\uc2a4\ud2b8 \ucf00\uc774\uc2a4",
-        )
-        if not summary or any(marker in summary for marker in rewritten_intent_markers) or (anchor and anchor not in summary):
-            analysis.summary = source
-        if not title or (anchor and anchor not in title):
-            analysis.title = source[:60] or "Untitled note"
+        title = UpdateRouter._prepare_text_for_note_save(title) if title else ""
+        summary = UpdateRouter._prepare_text_for_note_save(summary) if summary else ""
+        if not summary:
+            summary = source
+        if not title:
+            title = source[:60] or "Untitled note"
+        analysis.title = title
+        analysis.summary = summary
         analysis.is_note = True
         analysis.action = "create"
         analysis.target_note_id = None

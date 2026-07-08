@@ -71,6 +71,20 @@ class DroppingAnchorNIMProvider(EchoTextNIMProvider):
         )
 
 
+class PrefixInMetadataNIMProvider(EchoTextNIMProvider):
+    def analyze_text(self, text: str, **kwargs):
+        return TextAnalysisResult(
+            title="\uba54\ubaa8\ub85c \uc800\uc7a5\ud574\uc918: \uc800\uc7a5 \uba85\ub839\uc5b4 \ubbf8\ub0a8\uae40",
+            summary="\uc800\uc7a5\ud574\uc918: \uc81c\ubaa9\uacfc \uc694\uc57d\uc5d0 \uc800\uc7a5 \uba85\ub839\uc5b4\uac00 \ub0a8\uc9c0 \uc54a\ub3c4\ub85d \ud655\uc778",
+            tags=["bug"],
+            category="note",
+            confidence=0.9,
+            raw_response='{"ok": true}',
+            is_note=True,
+            action="create",
+        )
+
+
 def _post_text(client, *, message_id: int, text: str):
     return client.post(
         "/webhook/telegram",
@@ -170,6 +184,32 @@ def test_recent_list_and_numbered_selection_do_not_call_llm_or_save(tmp_path: Pa
         "note_id": note_id,
     }
     assert "선택" in telegram.messages[-1]["text"]
+
+
+def test_numbered_detail_request_reads_list_item_instead_of_saving(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, FastPathForbiddenNIMProvider())
+    for index in range(1, 6):
+        _insert_text_note(
+            db,
+            message_id=f"detail-source-{index}",
+            title=f"{index}번 제목",
+            body=f"{index}번 본문 상세 내용",
+            summary=f"{index}번 요약",
+        )
+
+    response = _post_text(client, message_id=1006, text="최근 저장된 항목들 모두 알려줘")
+    assert response.status_code == 200
+
+    response = _post_text(client, message_id=1007, text="5번 좀더 알려줘")
+    assert response.status_code == 200
+    assert len(db.fetch_all("NOTE")) == 5
+    assert "1번 본문 상세 내용" in telegram.messages[-1]["text"]
+
+    response = _post_text(client, message_id=1008, text="5번 메모 좀더 알려달라고")
+    assert response.status_code == 200
+    assert len(db.fetch_all("NOTE")) == 5
+    assert "1번 본문 상세 내용" in telegram.messages[-1]["text"]
 
 
 def test_full_list_command_has_priority_over_read_and_correction(tmp_path: Path, monkeypatch) -> None:
@@ -428,7 +468,7 @@ def test_explicit_save_is_stored_even_when_router_returns_ignore(tmp_path: Path,
     }
 
 
-def test_explicit_save_does_not_keep_rewritten_task_summary(tmp_path: Path, monkeypatch) -> None:
+def test_explicit_save_allows_ai_title_and_summary_without_leading_anchor(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
     client, db, _telegram = build_client(tmp_path, RewritingSummaryNIMProvider())
 
@@ -440,11 +480,12 @@ def test_explicit_save_does_not_keep_rewritten_task_summary(tmp_path: Path, monk
 
     assert response.status_code == 200
     note = db.fetch_all("NOTE")[0]
-    assert note["summary"] == "USER_PREFIX_FIX_0708. 저장 명령어는 제목과 요약과 본문에 남으면 안 된다."
+    assert note["title"] == "저장 명령어 접두사 버그 수정"
+    assert note["summary"] == "저장 명령어가 제목, 요약, 본문에 남지 않도록 수정해야 한다. 테스트 케이스에서 확인됨."
     assert note["body"] == "USER_PREFIX_FIX_0708. 저장 명령어는 제목과 요약과 본문에 남으면 안 된다."
 
 
-def test_explicit_save_preserves_leading_anchor_in_title_and_summary(tmp_path: Path, monkeypatch) -> None:
+def test_explicit_save_uses_ai_metadata_even_when_anchor_is_dropped(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
     client, db, _telegram = build_client(tmp_path, DroppingAnchorNIMProvider())
     body = "USER_PREFIX_FIX_0708. \uc800\uc7a5 \uba85\ub839\uc5b4\ub294 \uc81c\ubaa9\uacfc \uc694\uc57d\uacfc \ubcf8\ubb38\uc5d0 \ub0a8\uc73c\uba74 \uc548 \ub41c\ub2e4."
@@ -457,8 +498,26 @@ def test_explicit_save_preserves_leading_anchor_in_title_and_summary(tmp_path: P
 
     assert response.status_code == 200
     note = db.fetch_all("NOTE")[0]
-    assert note["title"].startswith("USER_PREFIX_FIX_0708")
-    assert note["summary"] == body
+    assert note["title"] == "\uc800\uc7a5 \uba85\ub839\uc5b4 \ubbf8\ub0a8\uae40 \ubc84\uadf8 \uc218\uc815"
+    assert note["summary"] == "\uc800\uc7a5 \uba85\ub839\uc5b4\ub294 \uc81c\ubaa9\uacfc \uc694\uc57d\uacfc \ubcf8\ubb38\uc5d0 \ub0a8\uc73c\uba74 \uc548 \ub41c\ub2e4."
+    assert note["body"] == body
+
+
+def test_explicit_save_strips_save_prefix_from_ai_metadata(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, _telegram = build_client(tmp_path, PrefixInMetadataNIMProvider())
+    body = "PREFIX_METADATA_0708. \uc800\uc7a5 \uba85\ub839\uc5b4\ub294 metadata\uc5d0 \ub0a8\uc73c\uba74 \uc548 \ub41c\ub2e4."
+
+    response = _post_text(
+        client,
+        message_id=1061,
+        text="\uba54\ubaa8\ub85c \uc800\uc7a5\ud574\uc918: " + body,
+    )
+
+    assert response.status_code == 200
+    note = db.fetch_all("NOTE")[0]
+    assert note["title"] == "\uc800\uc7a5 \uba85\ub839\uc5b4 \ubbf8\ub0a8\uae40"
+    assert note["summary"] == "\uc81c\ubaa9\uacfc \uc694\uc57d\uc5d0 \uc800\uc7a5 \uba85\ub839\uc5b4\uac00 \ub0a8\uc9c0 \uc54a\ub3c4\ub85d \ud655\uc778"
     assert note["body"] == body
 
 

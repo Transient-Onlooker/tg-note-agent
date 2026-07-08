@@ -9,6 +9,10 @@ flowchart TD
     Store --> State["Load CONVERSATION_STATE"]
     State --> Gate{"Deterministic command gate first"}
 
+    Gate -->|Slash command| Slash["Pin intent by command<br/>resolve flexible argument"]
+    Slash -->|/new| NewNote["Create new NOTE<br/>AI title / summary / tags"]
+    Slash -->|/add /fix /delete /dedupe| Approval["Store pending_action<br/>preview + approval required"]
+    Slash -->|/list /show over 10| Page["Paginated reply<br/>page_state + /next /prev"]
     Gate -->|Numbered reference| Numbered["Resolve from last_list_results<br/>then last_search_results<br/>set last_selected_note_id"]
     Gate -->|Read original| ReadLast["DB-only lookup<br/>NOTE.body or IMAGE_FILE.ocr_text"]
     Gate -->|Search / Recent / Count| ReadTools["DB-only active NOTE reads<br/>save list/search result state"]
@@ -37,6 +41,9 @@ flowchart TD
     Existing -->|General photo| PhotoOnly["Archive only"]
 
     Numbered --> Reply["Best-effort result reply"]
+    NewNote --> Reply
+    Approval --> Reply
+    Page --> Reply
     ReadLast --> Reply
     ReadTools --> Reply
     Correct --> Reply

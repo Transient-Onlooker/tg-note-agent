@@ -6,6 +6,8 @@ This is a short working roadmap for the current Telegram-first note agent.
 
 Current stabilization status: webhook outbound messaging is best-effort, command gate runs before AI save routing, explicit save prefixes are stripped before note persistence, numbered references are backed by conversation state, text/image corrections update the stored note fields, and regression tests cover those paths.
 
+Command UX direction: slash commands should pin intent while leaving arguments flexible. `/new` creates a new note, `/add` appends to an existing note, and existing-note mutations such as `/add`, `/fix`, `/delete`, and `/dedupe` require an approval step. See `docs/COMMANDS.md`.
+
 ## Delivery Phases
 
 1. `v1` core webhook + note routing
@@ -15,6 +17,10 @@ Current stabilization status: webhook outbound messaging is best-effort, command
 2. `v1.5` note query tools
    Target window: `2026-07-03` to `2026-07-04`
    Scope: count/search/tag listing, Telegram plain-text answers
+
+2.5. `v1.6` slash command UX
+   Target window: `2026-07-08` to `2026-07-09`
+   Scope: `/new`, `/add`, `/list`, `/show`, `/raw`, `/delete`, `/fix`, `/dedupe`, `/help`; Telegram command menu registration; pagination over 10 results; approval state for mutating existing notes
 
 3. `v2` image intake
    Target window: `2026-07-03` to `2026-07-05`
@@ -50,6 +56,13 @@ gantt
     Command gate hardening          :done, v15c, 2026-07-04, 1d
     Numbered reference regression   :done, v15d, 2026-07-04, 1d
     Delete-phrase correction route  :done, v15e, 2026-07-08, 1d
+
+    section v1.6 Slash Commands
+    Command grammar + docs          :active, v16a, 2026-07-08, 1d
+    Telegram setMyCommands          :v16b, after v16a, 1d
+    /new and /add separation        :v16c, after v16a, 1d
+    Pagination for list/show        :v16d, after v16b, 1d
+    Approval for add/fix/delete     :v16e, after v16c, 1d
 
     section v2 Images
     Telegram image ingest           :done, v2a, 2026-07-03, 1d
