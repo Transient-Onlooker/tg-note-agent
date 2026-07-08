@@ -7,7 +7,8 @@ This document reflects the current hybrid implementation:
 - Result reply failure is logged and recorded as `MESSAGE.status=reply_failed`.
 - Deterministic command gate runs before AI routing for read, search, recent, count, correction, delete, and numbered references.
 - AI routing is used only after command-gate miss, with a safety net preventing meta commands from becoming NOTE create/append.
-- OCR correction records `NOTE_REVISION` and synchronizes `NOTE.body` with `IMAGE_FILE.ocr_text`.
+- Explicit save prefixes such as `메모로 저장해줘:` are stripped before AI routing and NOTE persistence.
+- Correction records `NOTE_REVISION` and can update `NOTE.title`, `NOTE.summary`, `NOTE.body`, `IMAGE_FILE.ocr_text`, and `IMAGE_FILE.summary`.
 - Same-chat context remains bounded to 30 minutes for follow-up interpretation.
 
 For raw Mermaid files, see `docs/diagrams/`.
@@ -24,9 +25,11 @@ flowchart LR
     Router --> Outbound["Best-effort outbound<br/>ACK + result replies"]
     Outbound --> ReplyFailed["send failure logs warning<br/>result failure sets reply_failed"]
     Router --> Gate["Command gate first<br/>read / search / recent / count<br/>correction / delete / numbered reference"]
+    Router --> Prep["Save text preparation<br/>strip explicit save prefixes"]
     Router --> BG["BackgroundTasks"]
     Router --> DB["SQLite"]
     Router --> Archive["ImageArchive"]
+    Prep --> BG
     BG --> NIM["NVIDIA NIM<br/>router + text + vision"]
 
     Gate --> State["CONVERSATION_STATE<br/>last_list_results / last_search_results<br/>last_selected_note_id / last_image_note_id / pending_delete"]
@@ -74,7 +77,7 @@ sequenceDiagram
             R->>D: set last_list_results or last_search_results
         else correction
             R->>D: insert NOTE_REVISION
-            R->>D: update NOTE.body + IMAGE_FILE.ocr_text
+            R->>D: update NOTE title/summary/body + IMAGE_FILE ocr/summary
         else delete
             R->>D: set pending_delete_note_id or soft delete NOTE
         end
@@ -82,7 +85,8 @@ sequenceDiagram
         R-->>T: best-effort result reply
     else command gate miss
         R->>R: meta-command safety net
-        R->>M: route_text
+        R->>R: strip explicit save prefixes
+        R->>M: route_text(prepared text)
         M-->>R: create / append / ignore / tool
         R->>D: write NOTE, read tool data, or mark ignored
         R-->>T: best-effort result reply
@@ -163,9 +167,10 @@ flowchart TD
     Store --> Gate{"Command gate first"}
     Gate -->|Read/Search/Recent/Count| Read["DB-only answer"]
     Gate -->|Numbered reference| Select["Resolve list/search state<br/>set selected note"]
-    Gate -->|Correction| Correct["NOTE_REVISION<br/>NOTE.body + IMAGE_FILE.ocr_text"]
+    Gate -->|Correction| Correct["NOTE_REVISION<br/>NOTE title/summary/body<br/>IMAGE_FILE ocr/summary"]
     Gate -->|Delete| Delete["pending delete<br/>soft delete on confirm"]
-    Gate -->|Miss| AI["AI route_text"]
+    Gate -->|Miss| Prep["Strip explicit save prefixes"]
+    Prep --> AI["AI route_text"]
     AI --> Save["Create/append/ignore/tool"]
     In -->|Photo| OCR["IMAGE_FILE<br/>OCR/classify/update"]
     OCR --> Duplicate{"Existing NOTE?"}

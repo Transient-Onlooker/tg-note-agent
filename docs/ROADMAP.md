@@ -4,7 +4,7 @@ Base date: `2026-07-03`
 
 This is a short working roadmap for the current Telegram-first note agent.
 
-Current stabilization status: webhook outbound messaging is best-effort, command gate runs before AI save routing, numbered references are backed by conversation state, OCR correction updates both `NOTE.body` and `IMAGE_FILE.ocr_text`, and regression tests cover those paths.
+Current stabilization status: webhook outbound messaging is best-effort, command gate runs before AI save routing, explicit save prefixes are stripped before note persistence, numbered references are backed by conversation state, text/image corrections update the stored note fields, and regression tests cover those paths.
 
 ## Delivery Phases
 
@@ -42,12 +42,14 @@ gantt
     Duplicate update handling       :done, v1c, 2026-07-03, 1d
     Create / append / ignore route  :done, v1d, 2026-07-03, 1d
     Best-effort sendMessage policy  :done, v1e, 2026-07-04, 1d
+    Explicit save prefix cleanup    :done, v1f, 2026-07-08, 1d
 
     section v1.5 Query Tools
     Count / search / tag tools      :done, v15a, 2026-07-03, 1d
     Telegram output cleanup         :done, v15b, 2026-07-03, 1d
     Command gate hardening          :done, v15c, 2026-07-04, 1d
     Numbered reference regression   :done, v15d, 2026-07-04, 1d
+    Delete-phrase correction route  :done, v15e, 2026-07-08, 1d
 
     section v2 Images
     Telegram image ingest           :done, v2a, 2026-07-03, 1d

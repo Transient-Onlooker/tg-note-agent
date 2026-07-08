@@ -8,12 +8,14 @@ flowchart LR
     Ack -->|sendMessage fails| ReplyFailed["Log warning<br/>MESSAGE.status=reply_failed for result replies"]
     Router --> BG["BackgroundTasks"]
     Router --> Gate["Deterministic command gate<br/>read / search / recent / count<br/>correction / delete / numbered reference"]
+    Router --> Prep["Save text preparation<br/>strip explicit save prefixes"]
     Router --> Archive["ImageArchive"]
     Router --> Manager["NoteManager"]
     Router --> DB["SQLite"]
 
     Gate --> State["CONVERSATION_STATE<br/>last_list_results / last_search_results<br/>last_selected_note_id / last_image_note_id<br/>pending_delete_note_id"]
-    Gate --> Revisions["NOTE_REVISION<br/>correction history"]
+    Gate --> Revisions["NOTE_REVISION<br/>body correction audit"]
+    Prep --> BG
     BG --> NIM["NVIDIA NIM<br/>router + text + vision"]
     BG --> FastTools["AI tools after gate miss<br/>tags / merge / fallback reads"]
     BG --> AgentFallback["Read-focused fallback agent"]

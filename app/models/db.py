@@ -303,6 +303,33 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
+    def find_recent_note_by_body(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        body: str,
+        within_minutes: int = 10,
+    ) -> dict[str, Any] | None:
+        cutoff = (datetime.now(UTC) - timedelta(minutes=within_minutes)).isoformat()
+        with self.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT NOTE.*
+                FROM NOTE
+                JOIN MESSAGE ON MESSAGE.id = NOTE.message_id
+                WHERE MESSAGE.chat_id = ?
+                  AND MESSAGE.sender_id = ?
+                  AND NOTE.body = ?
+                  AND NOTE.deleted_at IS NULL
+                  AND NOTE.created_at >= ?
+                ORDER BY NOTE.created_at DESC
+                LIMIT 1
+                """,
+                (chat_id, sender_id, body, cutoff),
+            ).fetchone()
+        return dict(row) if row else None
+
     def recent_chat_messages(
         self,
         *,
@@ -944,6 +971,48 @@ class Database:
                 )
                 """,
                 (new_body, note_id),
+            )
+            conn.commit()
+
+        return self.get_note_with_source(note_id)
+
+    def replace_note_text_fields(
+        self,
+        *,
+        note_id: str,
+        new_title: str,
+        new_summary: str,
+        new_body: str,
+        reason: str | None = None,
+    ) -> dict[str, Any] | None:
+        note = self.get_note(note_id)
+        if note is None:
+            return None
+
+        previous_body = str(note.get("body") or "")
+        self.insert_note_revision(
+            note_id=note_id,
+            previous_body=previous_body,
+            new_body=new_body,
+            reason=reason,
+        )
+
+        with self.connection() as conn:
+            conn.execute(
+                "UPDATE NOTE SET title = ?, summary = ?, body = ? WHERE id = ?",
+                (new_title, new_summary, new_body, note_id),
+            )
+            conn.execute(
+                """
+                UPDATE IMAGE_FILE
+                SET ocr_text = ?, summary = ?
+                WHERE message_id = (
+                    SELECT message_id
+                    FROM NOTE
+                    WHERE id = ?
+                )
+                """,
+                (new_body, new_summary, note_id),
             )
             conn.commit()
 

@@ -48,8 +48,9 @@ sequenceDiagram
                         R-->>T: best-effort plain text answer
                     else correction
                         R->>D: resolve explicit number, selected note, list/search match, artifact, image note
+                        R->>R: parse replace or delete-phrase correction
                         R->>D: insert NOTE_REVISION
-                        R->>D: update NOTE.body and IMAGE_FILE.ocr_text
+                        R->>D: update NOTE title/summary/body and IMAGE_FILE ocr/summary
                         R->>D: set last_artifact_note_id and last_selected_note_id
                         R->>D: update MESSAGE(status=processed)
                         R-->>T: best-effort before/after reply
@@ -78,8 +79,9 @@ sequenceDiagram
                     end
                 else AI router after command miss
                     R->>R: safety net blocks meta commands from create or append
+                    R->>R: strip explicit save prefixes from note content
                     R->>D: read same-chat messages from last 30 min
-                    R->>M: route_text(current text + context + tags + candidates)
+                    R->>M: route_text(prepared text + context + tags + candidates)
                     M-->>R: route JSON
                     alt tool / fallback query
                         R->>D: read active notes, tags, or merge candidates
@@ -87,7 +89,7 @@ sequenceDiagram
                         R-->>T: best-effort plain text answer
                     else note save
                         R->>D: insert AI_ANALYSIS
-                        R->>D: create NOTE or append existing NOTE
+                        R->>D: create NOTE or append existing NOTE with prepared text
                         R->>D: update CONVERSATION_STATE(last_artifact_note_id)
                         R->>D: update MESSAGE(status=processed)
                         R-->>T: best-effort save summary

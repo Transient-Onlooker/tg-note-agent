@@ -543,8 +543,16 @@ class UpdateRouter:
         reply_token = _CURRENT_REPLY_MESSAGE_ID.set(message_id)
         try:
             resolved_sender_id = self._resolve_sender_id(message_id, sender_id)
+            explicit_save = self._has_explicit_note_save_request(text)
             command = self._detect_direct_command(text)
-            if command is not None and self._handle_direct_command(
+            command_takes_priority = (
+                command is not None
+                and (
+                    not explicit_save
+                    or self._is_explicit_save_prefix_delete_command(command)
+                )
+            )
+            if command_takes_priority and self._handle_direct_command(
                 message_id=message_id,
                 chat_id=chat_id,
                 sender_id=resolved_sender_id,
@@ -553,7 +561,7 @@ class UpdateRouter:
             ):
                 return
 
-            if self._looks_like_technical_note_statement(text):
+            if not explicit_save and self._looks_like_technical_note_statement(text):
                 logger.info(
                     "Technical note statement matched before AI route db_message_id=%s llm_called=false",
                     message_id,
@@ -566,7 +574,7 @@ class UpdateRouter:
                 )
                 return
 
-            if self._looks_like_meta_command(text):
+            if not explicit_save and self._looks_like_meta_command(text):
                 self.note_manager.mark_processed(message_id)
                 self._send_result_message(
                     message_id,
@@ -580,13 +588,41 @@ class UpdateRouter:
                 )
                 return
 
+            prepared_text = self._prepare_text_for_note_save(text)
+            if explicit_save:
+                duplicate_note = self.note_manager.find_recent_note_by_body(
+                    chat_id=str(chat_id),
+                    sender_id=resolved_sender_id,
+                    body=prepared_text,
+                    within_minutes=10,
+                )
+                if duplicate_note is not None:
+                    self.note_manager.mark_processed(message_id)
+                    self._remember_note_reference(
+                        chat_id=str(chat_id),
+                        sender_id=resolved_sender_id,
+                        note_id=str(duplicate_note.get("id")),
+                    )
+                    self._send_result_message(
+                        message_id,
+                        chat_id,
+                        "\uc774\ubbf8 \uac19\uc740 \uba54\ubaa8\uac00 \ucd5c\uadfc\uc5d0 \uc800\uc7a5\ub3fc \uc788\uc5b4. \uc0c8\ub85c \ucd94\uac00\ud558\uc9c4 \uc54a\uc558\uc5b4.",
+                        purpose="duplicate_note_body",
+                    )
+                    logger.info(
+                        "Ignored duplicate explicit note body db_message_id=%s note_id=%s",
+                        message_id,
+                        duplicate_note.get("id"),
+                    )
+                    return
+
             logger.info(
                 "Starting text route db_message_id=%s router_model=%s",
                 message_id,
                 self.nim_provider.router_model,
             )
             existing_tags = self.note_manager.list_tags()
-            candidate_notes = self.note_manager.search_notes(text, limit=5)
+            candidate_notes = self.note_manager.search_notes(prepared_text, limit=5)
             conversation_context = self.note_manager.recent_chat_messages(
                 str(chat_id),
                 limit=8,
@@ -594,7 +630,7 @@ class UpdateRouter:
                 exclude_message_id=message_id,
             )
             route = self.nim_provider.route_text(
-                text,
+                prepared_text,
                 candidate_notes=candidate_notes,
                 conversation_context=conversation_context,
             )
@@ -606,7 +642,9 @@ class UpdateRouter:
                 route.reason,
             )
 
-            if route.tool_name:
+            effective_route = "create" if explicit_save else route.route
+
+            if route.tool_name and not explicit_save:
                 self._execute_tool_request(
                     message_id=message_id,
                     chat_id=chat_id,
@@ -615,7 +653,7 @@ class UpdateRouter:
                 )
                 return
 
-            if route.route in {"create", "append"} and self._looks_like_meta_command(text):
+            if not explicit_save and effective_route in {"create", "append"} and self._looks_like_meta_command(text):
                 self.note_manager.mark_processed(message_id)
                 self._send_result_message(
                     message_id,
@@ -631,7 +669,7 @@ class UpdateRouter:
                 return
 
             if (
-                route.route == "ignore"
+                effective_route == "ignore"
             ) and not self._should_retry_as_contextual_query(
                 text=text,
                 conversation_context=conversation_context,
@@ -650,7 +688,7 @@ class UpdateRouter:
                 return
 
             if (
-                route.route == "ignore"
+                effective_route == "ignore"
             ) and self._should_retry_as_contextual_query(
                 text=text,
                 conversation_context=conversation_context,
@@ -664,7 +702,7 @@ class UpdateRouter:
                 return
 
             existing_note_id = None
-            action = "append" if route.route == "append" else "create"
+            action = "append" if effective_route == "append" else "create"
             if action == "append" and route.target_note_id:
                 existing_note = self.note_manager.get_note(route.target_note_id)
                 if existing_note is not None:
@@ -672,20 +710,28 @@ class UpdateRouter:
 
             try:
                 analysis = self.nim_provider.analyze_text(
-                    text,
+                    prepared_text,
                     existing_tags=existing_tags,
                     candidate_notes=candidate_notes,
                     conversation_context=conversation_context,
                     action=action,
                     target_note_id=existing_note_id,
                 )
+                if explicit_save and (analysis.is_note is False or analysis.action == "ignore"):
+                    analysis = self._build_explicit_save_fallback_analysis(
+                        prepared_text,
+                        action=action,
+                        target_note_id=existing_note_id,
+                    )
+                elif explicit_save:
+                    analysis = self._normalize_explicit_save_analysis(analysis, prepared_text)
             except NIMProviderError:
                 logger.exception(
                     "Failed to generate note metadata; saving degraded note db_message_id=%s",
                     message_id,
                 )
                 analysis = self.nim_provider.build_fallback_note_analysis(
-                    text,
+                    prepared_text,
                     action=action,
                     target_note_id=existing_note_id,
                 )
@@ -694,7 +740,7 @@ class UpdateRouter:
                 message_id=message_id,
                 provider_name="nvidia_nim",
                 model_name=self.nim_provider.text_model,
-                source_text=text,
+                source_text=prepared_text,
                 analysis=analysis,
                 existing_note_id=existing_note_id,
             )
@@ -1119,7 +1165,7 @@ class UpdateRouter:
         old_text: str,
         new_text: str,
     ) -> bool:
-        if not old_text or not new_text:
+        if not old_text:
             self.note_manager.mark_action_failed(message_id)
             self._send_result_message(
                 message_id,
@@ -1160,8 +1206,10 @@ class UpdateRouter:
             )
             return True
 
+        current_title = str(note.get("title") or "").strip()
+        current_summary = str(note.get("summary") or "").strip()
         current_body = str(note.get("image_ocr_text") or note.get("body") or "").strip()
-        if old_text not in current_body:
+        if old_text not in current_title and old_text not in current_summary and old_text not in current_body:
             self.note_manager.mark_action_failed(message_id)
             self._send_result_message(
                 message_id,
@@ -1171,9 +1219,13 @@ class UpdateRouter:
             )
             return True
 
-        updated_body = current_body.replace(old_text, new_text, 1)
-        updated_note = self.note_manager.replace_note_body(
+        updated_title = self._replace_note_fragment(current_title, old_text, new_text)
+        updated_summary = self._replace_note_fragment(current_summary, old_text, new_text)
+        updated_body = self._replace_note_fragment(current_body, old_text, new_text)
+        updated_note = self.note_manager.replace_note_text_fields(
             note_id=str(note.get("id")),
+            new_title=updated_title or current_title,
+            new_summary=updated_summary or current_summary,
             new_body=updated_body,
             reason="user_correction",
         )
@@ -1367,6 +1419,12 @@ class UpdateRouter:
             chat_id=chat_id,
             sender_id=sender_id,
             key="last_artifact_note_id",
+            value={"note_id": note_id},
+        )
+        self.note_manager.set_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key="last_selected_note_id",
             value={"note_id": note_id},
         )
 
@@ -1601,14 +1659,19 @@ class UpdateRouter:
             r"(?P<old>.+?)\s*(?:->|\u2192)\s*(?P<new>.+?)\s*(?:\uc218\uc815\ud574\uc918|\uc815\uc815\ud574\uc918|\uace0\uccd0\uc918|\ubc14\uafd4\uc918)?(?:[.!?])?\s*$",
             r"(?P<old>.+?)\s+\ub9d0\uace0\s+(?P<new>.+?)(?:[.!?])?\s*(?:\uc218\uc815\ud574\uc918|\uc815\uc815\ud574\uc918|\uace0\uccd0\uc918|\ubc14\uafd4\uc918)?\s*$",
             r"(?P<old>.+?)(?:\uc744|\ub97c)\s+(?P<new>.+?)\ub85c\s*(?:[.!?])?\s*(?:\uc218\uc815\ud574\uc918|\uc815\uc815\ud574\uc918|\uace0\uccd0\uc918|\ubc14\uafd4\uc918)?\s*$",
+            r"(?P<old>.+?)(?:\uc744|\ub97c)\s*(?:\uc0ad\uc81c|\uc9c0\uc6cc|\uc5c6\uc560)(?:\ud574\uc918|\ud574|\uc918)?\s*$",
         )
         for pattern in patterns:
             match = re.search(pattern, text.strip(), re.IGNORECASE)
             if match:
+                old_text = match.group("old").strip(" \"'")
+                new_text = cls._strip_correction_suffix(match.groupdict().get("new", ""))
+                if not new_text and cls._looks_like_reference_only_text(old_text):
+                    continue
                 return CommandIntent(
                     name="correct_last_note",
-                    old_text=match.group("old").strip(" \"'"),
-                    new_text=cls._strip_correction_suffix(match.group("new")),
+                    old_text=old_text,
+                    new_text=new_text,
                 )
         if not any(hint in normalized for hint in CORRECTION_HINTS):
             return None
@@ -1631,6 +1694,114 @@ class UpdateRouter:
         if match:
             return max(int(match.group(1)) - 1, 0)
         return None
+
+    @classmethod
+    def _looks_like_reference_only_text(cls, text: str) -> bool:
+        normalized = cls._normalize_text(text)
+        if not normalized:
+            return True
+        if re.fullmatch(r"\d+\s*\ubc88\s*(?:\uba54\ubaa8|\ub178\ud2b8)?", normalized):
+            return True
+        return normalized in FAST_READ_REFERENCE_HINTS or normalized in {"\uba54\ubaa8", "\ub178\ud2b8"}
+
+    @staticmethod
+    def _replace_note_fragment(text: str, old_text: str, new_text: str) -> str:
+        if not text or old_text not in text:
+            return text
+        updated = text.replace(old_text, new_text, 1)
+        updated = re.sub(r"^[\s:,-]+", "", updated)
+        updated = re.sub(r"\s{2,}", " ", updated)
+        return updated.strip()
+
+    @staticmethod
+    def _normalize_explicit_save_analysis(analysis: TextAnalysisResult, source_text: str) -> TextAnalysisResult:
+        title = (analysis.title or "").strip()
+        summary = (analysis.summary or "").strip()
+        source = source_text.strip()
+        anchor = UpdateRouter._extract_explicit_save_anchor(source)
+        rewritten_intent_markers = (
+            "\uc218\uc815\ud574\uc57c",
+            "\ud574\uc57c \ud55c\ub2e4",
+            "\ud655\uc778\ub428",
+            "\ud14c\uc2a4\ud2b8 \ucf00\uc774\uc2a4",
+        )
+        if not summary or any(marker in summary for marker in rewritten_intent_markers) or (anchor and anchor not in summary):
+            analysis.summary = source
+        if not title or (anchor and anchor not in title):
+            analysis.title = source[:60] or "Untitled note"
+        analysis.is_note = True
+        analysis.action = "create"
+        analysis.target_note_id = None
+        analysis.tool_name = None
+        analysis.tool_query = None
+        analysis.tool_tag = None
+        analysis.tool_limit = None
+        return analysis
+
+    @staticmethod
+    def _extract_explicit_save_anchor(source_text: str) -> str | None:
+        match = re.match(r"^([A-Za-z0-9][A-Za-z0-9_-]{3,})(?:[.\s:),\]]|$)", source_text.strip())
+        if not match:
+            return None
+        anchor = match.group(1)
+        has_identifier_shape = "_" in anchor or "-" in anchor or any(char.isdigit() for char in anchor)
+        if has_identifier_shape:
+            return anchor
+        return None
+
+    @staticmethod
+    def _is_explicit_save_prefix_delete_command(command: CommandIntent) -> bool:
+        if command.name != "correct_last_note" or not command.old_text or command.new_text:
+            return False
+        return command.old_text.strip() in {
+            "\uba54\ubaa8\ub85c \uc800\uc7a5\ud574\uc918:",
+            "\uba54\ubaa8\ub85c \uc800\uc7a5\ud574\uc918",
+            "\uc800\uc7a5\ud574\uc918:",
+            "\uc800\uc7a5\ud574\uc918",
+        }
+
+    @staticmethod
+    def _build_explicit_save_fallback_analysis(
+        text: str,
+        *,
+        action: str,
+        target_note_id: str | None,
+    ) -> TextAnalysisResult:
+        title = text[:60].strip() or "Untitled note"
+        return TextAnalysisResult(
+            title=title,
+            summary=text,
+            tags=[],
+            category="note",
+            confidence=0.5,
+            raw_response='{"fallback": "explicit_save"}',
+            is_note=True,
+            action=action,
+            target_note_id=target_note_id,
+        )
+
+    @staticmethod
+    def _has_explicit_note_save_request(text: str) -> bool:
+        normalized = text.strip()
+        patterns = (
+            r"^(?:\uba54\ubaa8\ub85c\s*)?\uc800\uc7a5\ud574(?:줘|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
+            r"^\uba54\ubaa8\s*(?:\ub85c\s*)?\ub0a8\uaca8(?:줘|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
+            r"^\uae30\ub85d\ud574(?:줘|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
+        )
+        return any(re.match(pattern, normalized) for pattern in patterns)
+
+    @staticmethod
+    def _prepare_text_for_note_save(text: str) -> str:
+        cleaned = text.strip()
+        patterns = (
+            r"^(?:\uba54\ubaa8\ub85c\s*)?\uc800\uc7a5\ud574(?:줘|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
+            r"^\uba54\ubaa8\s*(?:\ub85c\s*)?\ub0a8\uaca8(?:줘|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
+            r"^\uae30\ub85d\ud574(?:줘|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
+        )
+        for pattern in patterns:
+            cleaned = re.sub(pattern, "", cleaned, count=1)
+        compact = cleaned.strip()
+        return compact or text.strip()
 
     @staticmethod
     def _clean_search_query(text: str) -> str:

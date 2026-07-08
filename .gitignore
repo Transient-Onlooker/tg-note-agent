@@ -1,7 +1,14 @@
 .env
+.venv/
 __pycache__/
 .pytest_cache/
 .pytest_tmp/
 *.pyc
+*.log
 data/*.sqlite
+data/*.sqlite-*
 images/archive/
+*.jpg
+*.jpeg
+*.png
+*.webp

@@ -40,7 +40,7 @@ class NvidiaNIMProvider:
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
-        resolved_model = text_model or model or "minimaxai/minimax-m2.7"
+        resolved_model = text_model or model or "z-ai/glm-5.2"
         self.router_model = router_model or resolved_model
         self.text_model = resolved_model
         self.model = self.text_model
@@ -202,6 +202,8 @@ class NvidiaNIMProvider:
                         "Do not include markdown or extra text. "
                         "title and summary must be written in Korean. "
                         "summary must always be Korean, even if the source text mixes English and Korean. "
+                        "Preserve the user's stated meaning; do not reinterpret test sentences as tasks, bug reports, or requirements unless the user explicitly asks to create a task. "
+                        "If the source text is already a short single-sentence note, the summary may closely mirror the source text. "
                         "tags must be an array of short strings. "
                         "confidence must be a number between 0 and 1. "
                         "Prefer reusing existing tags when they already match the content. "

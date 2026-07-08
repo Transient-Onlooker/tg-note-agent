@@ -115,6 +115,21 @@ class NoteManager:
     def get_note_by_message_id(self, message_id: str) -> dict | None:
         return self.db.get_note_by_message_id(message_id)
 
+    def find_recent_note_by_body(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        body: str,
+        within_minutes: int = 10,
+    ) -> dict | None:
+        return self.db.find_recent_note_by_body(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            body=body,
+            within_minutes=within_minutes,
+        )
+
     def get_last_note_for_chat(
         self,
         chat_id: str,
@@ -197,6 +212,23 @@ class NoteManager:
     ) -> dict | None:
         return self.db.replace_note_body(
             note_id=note_id,
+            new_body=new_body,
+            reason=reason,
+        )
+
+    def replace_note_text_fields(
+        self,
+        *,
+        note_id: str,
+        new_title: str,
+        new_summary: str,
+        new_body: str,
+        reason: str | None = None,
+    ) -> dict | None:
+        return self.db.replace_note_text_fields(
+            note_id=note_id,
+            new_title=new_title,
+            new_summary=new_summary,
             new_body=new_body,
             reason=reason,
         )

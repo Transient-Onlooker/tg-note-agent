@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
         api_key=get_required_env("NIM_API_KEY", "test-key"),
         base_url=get_required_env("NIM_BASE_URL", "https://integrate.api.nvidia.com/v1"),
         router_model=get_required_env("NIM_ROUTER_MODEL", "nvidia/nemotron-3-nano-30b-a3b"),
-        text_model=get_required_env("NIM_TEXT_MODEL", "meta/llama-3.3-70b-instruct"),
+        text_model=get_required_env("NIM_TEXT_MODEL", "z-ai/glm-5.2"),
         vision_model=os.getenv("NIM_VISION_MODEL", "").strip() or None,
         router_timeout_seconds=float(os.getenv("NIM_ROUTER_TIMEOUT_SECONDS", "12")),
         text_timeout_seconds=float(os.getenv("NIM_TEXT_TIMEOUT_SECONDS", "45")),
