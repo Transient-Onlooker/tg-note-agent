@@ -111,6 +111,30 @@ DELETE_CONFIRM_HINTS = (
     "\uc751 \uc0ad\uc81c",
     "\uc9c0\uc6cc",
 )
+ACTION_CONFIRM_HINTS = (
+    "\uc2b9\uc778",
+    "\ud655\uc778",
+    "\uc9c4\ud589",
+    "\uc801\uc6a9",
+    "yes",
+    "y",
+)
+ACTION_CANCEL_HINTS = (
+    "\ucde8\uc18c",
+    "\uc544\ub2c8",
+    "no",
+    "n",
+)
+SUMMARY_REWRITE_HINTS = (
+    "\uc694\uc57d \ub2e4\uc2dc",
+    "\ub2e4\uc2dc \uc694\uc57d",
+    "\uc694\uc57d \uc0c8\ub85c",
+    "\uc694\uc57d \uc7ac\uc791\uc131",
+    "\uc7ac\uc694\uc57d",
+    "\uc694\uc57d \uace0\uccd0",
+    "\uc694\uc57d \uc218\uc815",
+    "\uc694\uc57d \uc815\ub9ac",
+)
 CORRECTION_HINTS = (
     "\uc218\uc815\ud574\uc918",
     "\uc218\uc815\ud558\ub77c\uace0",
@@ -146,6 +170,9 @@ SLASH_COMMAND_NAMES = {
     "fix",
     "dedupe",
     "help",
+    "next",
+    "prev",
+    "page",
 }
 NOTE_COMMAND_HINTS = (
     "\uba54\ubaa8",
@@ -565,6 +592,17 @@ class UpdateRouter:
         try:
             resolved_sender_id = self._resolve_sender_id(message_id, sender_id)
             explicit_save = self._has_explicit_note_save_request(text)
+            if self._looks_like_pending_rejection(text) and self._has_pending_confirmation(
+                chat_id=str(chat_id),
+                sender_id=resolved_sender_id,
+            ):
+                self._handle_pending_action_reply(
+                    message_id=message_id,
+                    chat_id=chat_id,
+                    sender_id=resolved_sender_id,
+                    approved=False,
+                )
+                return
             command = self._detect_direct_command(text)
             command_takes_priority = (
                 command is not None
@@ -703,7 +741,7 @@ class UpdateRouter:
                 )
                 self.telegram_client.send_message(
                     chat_id,
-                    "메모로 저장하진 않았어.",
+                    self._build_non_note_reply(text),
                 )
                 logger.info("Ignored non-note text db_message_id=%s", message_id)
                 return
@@ -821,8 +859,16 @@ class UpdateRouter:
             if command_name in SLASH_COMMAND_NAMES:
                 return CommandIntent(name=f"slash_{command_name}", query=argument)
 
-        if any(hint == normalized for hint in DELETE_CONFIRM_HINTS):
+        command_token = normalized.strip(" .!?？")
+
+        if any(hint == command_token for hint in DELETE_CONFIRM_HINTS):
             return CommandIntent(name="delete_confirm")
+
+        if any(hint == command_token for hint in ACTION_CONFIRM_HINTS):
+            return CommandIntent(name="pending_action_confirm")
+
+        if any(hint == command_token for hint in ACTION_CANCEL_HINTS):
+            return CommandIntent(name="pending_action_cancel")
 
         list_mode = self._list_command_mode(normalized)
         if list_mode is not None:
@@ -965,6 +1011,7 @@ class UpdateRouter:
                 message_id=message_id,
                 chat_id=chat_id,
                 sender_id=sender_id,
+                text=text,
             )
 
         if command.name == "delete_confirm":
@@ -972,6 +1019,22 @@ class UpdateRouter:
                 message_id=message_id,
                 chat_id=chat_id,
                 sender_id=sender_id,
+            )
+
+        if command.name == "pending_action_confirm":
+            return self._handle_pending_action_reply(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                approved=True,
+            )
+
+        if command.name == "pending_action_cancel":
+            return self._handle_pending_action_reply(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                approved=False,
             )
 
         if command.name == "correct_last_note":
@@ -1010,6 +1073,14 @@ class UpdateRouter:
                 sender_id=sender_id,
                 query=argument,
             )
+        if command_name in {"next", "prev", "page"}:
+            return self._handle_slash_page(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                command_name=command_name,
+                argument=argument,
+            )
         if command_name in {"show", "raw"}:
             return self._handle_slash_show(
                 message_id=message_id,
@@ -1024,15 +1095,28 @@ class UpdateRouter:
                 sender_id=sender_id,
                 text=argument,
             )
-        if command_name in {"add", "fix", "dedupe"}:
-            self.note_manager.mark_processed(message_id)
-            self._send_result_message(
-                message_id,
-                chat_id,
-                self._build_pending_action_not_ready_message(command_name),
-                purpose=f"slash_{command_name}_not_ready",
+        if command_name == "fix":
+            return self._handle_fix_request(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                text=argument,
+                explicit_slash=True,
             )
-            return True
+        if command_name == "add":
+            return self._handle_add_request(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                text=argument,
+            )
+        if command_name == "dedupe":
+            return self._handle_duplicate_delete_request(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                text=argument,
+            )
         if command_name == "help":
             self.note_manager.mark_processed(message_id)
             self._send_result_message(
@@ -1136,26 +1220,82 @@ class UpdateRouter:
         query: str,
     ) -> bool:
         if query:
-            notes = self.note_manager.search_notes(query, limit=10)
-            self._remember_search_results(
+            notes = self.note_manager.search_notes(query, limit=50)
+            message = self._store_and_build_note_page(
                 chat_id=str(chat_id),
                 sender_id=sender_id,
-                note_ids=[str(note.get("id")) for note in notes if note.get("id")],
+                notes=notes,
+                mode="search",
                 query=query,
-            )
-            message = self._build_search_results_message(notes) if notes else "관련 메모를 찾지 못했어."
+                page=1,
+            ) if notes else "관련 메모를 찾지 못했어."
             purpose = "slash_list_search"
         else:
-            notes = self.note_manager.recent_notes(limit=10)
-            self._remember_list_results(
+            notes = self.note_manager.recent_notes(limit=50)
+            message = self._store_and_build_note_page(
                 chat_id=str(chat_id),
                 sender_id=sender_id,
-                note_ids=[str(note.get("id")) for note in notes if note.get("id")],
+                notes=notes,
+                mode="recent",
+                query="",
+                page=1,
             )
-            message = self._build_recent_notes_plain_message(notes)
             purpose = "slash_list_recent"
         self.note_manager.mark_processed(message_id)
         self._send_result_message(message_id, chat_id, message, purpose=purpose)
+        return True
+
+    def _handle_slash_page(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        command_name: str,
+        argument: str,
+    ) -> bool:
+        state = self.note_manager.get_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="page_state",
+        )
+        if not isinstance(state, dict):
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "넘길 목록이 없어. 먼저 /list를 실행해줘.",
+                purpose="slash_page_missing",
+            )
+            return True
+
+        current_page = int(state.get("page") or 1)
+        total_pages = int(state.get("total_pages") or 1)
+        if command_name == "next":
+            page = min(current_page + 1, total_pages)
+        elif command_name == "prev":
+            page = max(current_page - 1, 1)
+        else:
+            match = re.search(r"\d+", argument)
+            page = int(match.group(0)) if match else current_page
+            page = max(1, min(page, total_pages))
+
+        note_ids = [str(item) for item in state.get("note_ids") or [] if item]
+        notes = [
+            note
+            for note_id in note_ids
+            if (note := self.note_manager.get_note_with_source(note_id)) is not None
+        ]
+        message = self._store_and_build_note_page(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            notes=notes,
+            mode=str(state.get("mode") or "recent"),
+            query=str(state.get("query") or ""),
+            page=page,
+        )
+        self.note_manager.mark_processed(message_id)
+        self._send_result_message(message_id, chat_id, message, purpose=f"slash_{command_name}")
         return True
 
     def _handle_slash_show(
@@ -1236,11 +1376,13 @@ class UpdateRouter:
         message_id: str,
         chat_id: int | str,
         sender_id: str,
+        text: str = "",
     ) -> bool:
         duplicate_groups = self.note_manager.find_duplicate_notes_by_body(
             chat_id=str(chat_id),
             sender_id=sender_id,
         )
+        duplicate_groups = self._filter_duplicate_groups_by_query(duplicate_groups, text)
         if not duplicate_groups:
             self.note_manager.mark_processed(message_id)
             self._send_result_message(
@@ -1251,33 +1393,54 @@ class UpdateRouter:
             )
             return True
 
-        deleted_count = 0
-        kept_titles: list[str] = []
+        duplicate_note_ids: list[str] = []
+        groups_for_state: list[dict] = []
         for group in duplicate_groups:
             keep_note = group.get("keep_note") or {}
             keep_title = str(keep_note.get("title") or "\uc81c\ubaa9 \uc5c6\uc74c").strip()
-            if keep_title:
-                kept_titles.append(keep_title)
+            duplicate_titles: list[str] = []
             for duplicate_note in group.get("duplicate_notes") or []:
                 note_id = duplicate_note.get("id")
                 if not note_id:
                     continue
-                self.note_manager.delete_note(str(note_id), reason="duplicate_body_cleanup")
-                deleted_count += 1
+                duplicate_note_ids.append(str(note_id))
+                duplicate_titles.append(str(duplicate_note.get("title") or "\uc81c\ubaa9 \uc5c6\uc74c").strip())
+            if duplicate_titles:
+                groups_for_state.append(
+                    {
+                        "keep_note_id": str(keep_note.get("id") or ""),
+                        "keep_title": keep_title,
+                        "duplicate_titles": duplicate_titles,
+                    }
+                )
 
+        if not duplicate_note_ids:
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "정리할 중복 메모를 찾지 못했어.",
+                purpose="duplicate_delete_none",
+            )
+            return True
+
+        pending = {
+            "type": "dedupe",
+            "duplicate_note_ids": duplicate_note_ids,
+            "groups": groups_for_state,
+        }
+        self.note_manager.set_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="pending_action",
+            value=pending,
+        )
         self.note_manager.mark_processed(message_id)
-        self._clear_correction_state(chat_id=str(chat_id), sender_id=sender_id)
-        lines = [
-            f"\uc911\ubcf5 \uba54\ubaa8 {deleted_count}\uac1c\ub97c \uc0ad\uc81c\ud588\uc5b4.",
-            "\ubcf8\ubb38\uc774 \uc815\ud655\ud788 \uac19\uc740 \uba54\ubaa8\ub9cc \ub300\uc0c1\uc73c\ub85c \ud588\uace0, \uac01 \uadf8\ub8f9\uc758 \ucd5c\uc2e0 \uba54\ubaa8\ub294 \ub0a8\uacbc\uc5b4.",
-        ]
-        if kept_titles:
-            lines.append("\ub0a8\uae34 \uba54\ubaa8: " + ", ".join(kept_titles[:3]))
         self._send_result_message(
             message_id,
             chat_id,
-            "\n".join(lines),
-            purpose="duplicate_delete_completed",
+            self._build_dedupe_preview_message(pending),
+            purpose="dedupe_preview",
         )
         return True
 
@@ -1441,6 +1604,458 @@ class UpdateRouter:
         )
         return True
 
+    def _handle_pending_action_reply(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        approved: bool,
+    ) -> bool:
+        pending = self.note_manager.get_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="pending_action",
+        )
+        if not isinstance(pending, dict):
+            if not approved:
+                pending_delete = self.note_manager.get_conversation_state(
+                    chat_id=str(chat_id),
+                    sender_id=sender_id,
+                    key="pending_delete_note_id",
+                )
+                if pending_delete:
+                    self.note_manager.clear_conversation_state(
+                        chat_id=str(chat_id),
+                        sender_id=sender_id,
+                        key="pending_delete_note_id",
+                    )
+                    self.note_manager.mark_processed(message_id)
+                    self._send_result_message(
+                        message_id,
+                        chat_id,
+                        "삭제를 취소했어.",
+                        purpose="delete_cancelled",
+                    )
+                    return True
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "승인 대기 중인 작업이 없어.",
+                purpose="pending_action_missing",
+            )
+            return True
+
+        if not approved:
+            self.note_manager.clear_conversation_state(
+                chat_id=str(chat_id),
+                sender_id=sender_id,
+                key="pending_action",
+            )
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "대기 중인 작업을 취소했어.",
+                purpose="pending_action_cancelled",
+            )
+            return True
+
+        action_type = str(pending.get("type") or "")
+        if action_type not in {"fix", "add", "summary_rewrite"}:
+            if action_type == "dedupe":
+                return self._apply_pending_dedupe(
+                    message_id=message_id,
+                    chat_id=chat_id,
+                    sender_id=sender_id,
+                    pending=pending,
+                )
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "이 대기 작업은 아직 실행 로직이 연결되지 않았어.",
+                purpose="pending_action_unsupported",
+            )
+            return True
+
+        note_id = str(pending.get("note_id") or "")
+        note = self.note_manager.get_note_with_source(note_id) if note_id else None
+        if note is None:
+            self.note_manager.clear_conversation_state(
+                chat_id=str(chat_id),
+                sender_id=sender_id,
+                key="pending_action",
+            )
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "대상 메모를 다시 찾지 못했어. 명령을 다시 보내줘.",
+                purpose="pending_action_target_missing",
+            )
+            return True
+
+        updated_note = self.note_manager.replace_note_text_fields(
+            note_id=note_id,
+            new_title=str(pending.get("new_title") or note.get("title") or ""),
+            new_summary=str(pending.get("new_summary") or note.get("summary") or ""),
+            new_body=str(pending.get("new_body") or note.get("body") or ""),
+            reason=f"user_approved_{action_type}",
+        )
+        self.note_manager.clear_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="pending_action",
+        )
+        self.note_manager.mark_processed(message_id)
+        self._remember_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            note_id=note_id,
+        )
+        self._send_result_message(
+            message_id,
+            chat_id,
+            (
+                self._build_add_completed_message(updated_note or note, pending)
+                if action_type == "add"
+                else self._build_summary_rewrite_completed_message(updated_note or note, pending)
+                if action_type == "summary_rewrite"
+                else self._build_fix_completed_message(updated_note or note, pending)
+            ),
+            purpose=f"pending_{action_type}_applied",
+        )
+        return True
+
+    def _apply_pending_dedupe(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        pending: dict,
+    ) -> bool:
+        note_ids = [str(item) for item in pending.get("duplicate_note_ids") or [] if item]
+        deleted_count = 0
+        for note_id in note_ids:
+            note = self.note_manager.get_note_with_source(note_id)
+            if note is None:
+                continue
+            self.note_manager.delete_note(note_id, reason="user_approved_dedupe")
+            deleted_count += 1
+
+        self.note_manager.clear_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="pending_action",
+        )
+        self.note_manager.mark_processed(message_id)
+        self._send_result_message(
+            message_id,
+            chat_id,
+            self._build_dedupe_completed_message(deleted_count, pending),
+            purpose="pending_dedupe_applied",
+        )
+        return True
+
+    def _handle_add_request(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        text: str,
+    ) -> bool:
+        target_text, append_text = self._extract_add_parts(text)
+        if not append_text:
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "추가할 내용을 알 수 없어. 예: /add 1번 메모에 참고 링크 추가",
+                purpose="add_parse_failed",
+            )
+            return True
+
+        if self._looks_like_summary_rewrite_request(append_text):
+            return self._handle_summary_rewrite_request(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                text=target_text or text,
+            )
+
+        resolved = self._resolve_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            text=target_text or text,
+            prefer_image=False,
+        )
+        note = resolved.get("note")
+        candidates = resolved.get("candidates") or []
+        if candidates:
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                self._build_reference_choice_message(
+                    action_label="추가",
+                    notes=candidates,
+                ),
+                purpose="add_reference_choice",
+            )
+            return True
+
+        if not isinstance(note, dict):
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "추가할 대상 메모를 찾지 못했어. /list로 후보를 먼저 본 뒤 번호를 포함해서 다시 보내줘.",
+                purpose="add_target_missing",
+            )
+            return True
+
+        current_title = str(note.get("title") or "").strip()
+        current_summary = str(note.get("summary") or "").strip()
+        current_body = str(note.get("image_ocr_text") or note.get("body") or "").strip()
+        new_body = self._append_text_block(current_body, append_text)
+        new_summary = self._append_summary(current_summary, append_text)
+        pending = {
+            "type": "add",
+            "note_id": str(note.get("id")),
+            "append_text": append_text,
+            "old_title": current_title,
+            "old_summary": current_summary,
+            "old_body": current_body,
+            "new_title": current_title,
+            "new_summary": new_summary,
+            "new_body": new_body,
+        }
+        self.note_manager.set_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="pending_action",
+            value=pending,
+        )
+        self.note_manager.mark_processed(message_id)
+        self._send_result_message(
+            message_id,
+            chat_id,
+            self._build_add_preview_message(note, pending),
+            purpose="add_preview",
+        )
+        return True
+
+    def _handle_summary_rewrite_request(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        text: str,
+    ) -> bool:
+        resolved = self._resolve_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            text=text,
+            prefer_image=False,
+        )
+        note = resolved.get("note")
+        candidates = resolved.get("candidates") or []
+        if candidates:
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                self._build_reference_choice_message(
+                    action_label="요약 재작성",
+                    notes=candidates,
+                ),
+                purpose="summary_rewrite_reference_choice",
+            )
+            return True
+
+        if not isinstance(note, dict):
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "요약을 다시 쓸 대상 메모를 찾지 못했어. /list로 후보를 먼저 본 뒤 번호를 포함해서 다시 보내줘.",
+                purpose="summary_rewrite_target_missing",
+            )
+            return True
+
+        current_title = str(note.get("title") or "").strip()
+        current_summary = str(note.get("summary") or "").strip()
+        current_body = str(note.get("image_ocr_text") or note.get("body") or "").strip()
+        if not current_body:
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "요약을 다시 만들 본문이 없어.",
+                purpose="summary_rewrite_body_missing",
+            )
+            return True
+
+        try:
+            analysis = self.nim_provider.analyze_text(
+                current_body,
+                action="create",
+                target_note_id=str(note.get("id") or ""),
+            )
+        except NIMProviderError as exc:
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                f"요약 재작성에 실패했어. ({exc})",
+                purpose="summary_rewrite_ai_failed",
+            )
+            return True
+
+        new_summary = self._prepare_text_for_note_save(str(analysis.summary or "").strip())
+        if not new_summary:
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "AI가 새 요약을 만들지 못했어.",
+                purpose="summary_rewrite_empty",
+            )
+            return True
+
+        pending = {
+            "type": "summary_rewrite",
+            "note_id": str(note.get("id")),
+            "old_title": current_title,
+            "old_summary": current_summary,
+            "old_body": current_body,
+            "new_title": current_title,
+            "new_summary": new_summary,
+            "new_body": current_body,
+        }
+        self.note_manager.set_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="pending_action",
+            value=pending,
+        )
+        self.note_manager.mark_processed(message_id)
+        self._send_result_message(
+            message_id,
+            chat_id,
+            self._build_summary_rewrite_preview_message(note, pending),
+            purpose="summary_rewrite_preview",
+        )
+        return True
+
+    def _handle_fix_request(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        text: str,
+        explicit_slash: bool = False,
+        old_text_override: str | None = None,
+        new_text_override: str | None = None,
+    ) -> bool:
+        old_text, new_text = (
+            (old_text_override or "").strip(),
+            (new_text_override or "").strip(),
+        )
+        if not old_text:
+            old_text, new_text = self._extract_fix_replace_pair(text)
+        if not old_text:
+            self.note_manager.mark_action_failed(message_id)
+            example = "/fix 1번 메모의 인민을 시민으로 수정" if explicit_slash else "인민을 시민으로 수정해줘"
+            self._send_result_message(
+                message_id,
+                chat_id,
+                f"수정할 문구를 정확히 알 수 없어. 예: {example}",
+                purpose="fix_parse_failed",
+            )
+            return True
+
+        resolved = self._resolve_correction_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            text=text,
+            old_text=old_text,
+            prefer_image=True,
+        )
+        note = resolved.get("note")
+        candidates = resolved.get("candidates") or []
+        if candidates:
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                self._build_reference_choice_message(
+                    action_label="수정",
+                    notes=candidates,
+                ),
+                purpose="fix_reference_choice",
+            )
+            return True
+
+        if not isinstance(note, dict):
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "수정할 메모를 찾지 못했어. /list로 후보를 먼저 본 뒤 번호를 포함해서 다시 보내줘.",
+                purpose="fix_target_missing",
+            )
+            return True
+
+        current_title = str(note.get("title") or "").strip()
+        current_summary = str(note.get("summary") or "").strip()
+        current_body = str(note.get("image_ocr_text") or note.get("body") or "").strip()
+        if old_text not in current_title and old_text not in current_summary and old_text not in current_body:
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                self._build_correction_miss_message(current_body),
+                purpose="fix_old_text_missing",
+            )
+            return True
+
+        updated_title = self._replace_note_fragment(current_title, old_text, new_text)
+        updated_summary = self._replace_note_fragment(current_summary, old_text, new_text)
+        updated_body = self._replace_note_fragment(current_body, old_text, new_text)
+        pending = {
+            "type": "fix",
+            "note_id": str(note.get("id")),
+            "old_text": old_text,
+            "new_text": new_text,
+            "old_title": current_title,
+            "old_summary": current_summary,
+            "old_body": current_body,
+            "new_title": updated_title or current_title,
+            "new_summary": updated_summary or current_summary,
+            "new_body": updated_body,
+        }
+        self.note_manager.set_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="pending_action",
+            value=pending,
+        )
+        self.note_manager.mark_processed(message_id)
+        self._send_result_message(
+            message_id,
+            chat_id,
+            self._build_fix_preview_message(note, pending),
+            purpose="fix_preview",
+        )
+        return True
+
     def _handle_note_correction(
         self,
         *,
@@ -1460,85 +2075,15 @@ class UpdateRouter:
                 purpose="correction_parse_failed",
             )
             return True
-
-        resolved = self._resolve_note_reference(
-            chat_id=str(chat_id),
+        return self._handle_fix_request(
+            message_id=message_id,
+            chat_id=chat_id,
             sender_id=sender_id,
             text=text,
-            prefer_image=True,
+            explicit_slash=False,
+            old_text_override=old_text,
+            new_text_override=new_text,
         )
-        note = resolved.get("note")
-        candidates = resolved.get("candidates") or []
-        if candidates:
-            self.note_manager.mark_processed(message_id)
-            self._send_result_message(
-                message_id,
-                chat_id,
-                self._build_reference_choice_message(
-                    action_label="\uc218\uc815",
-                    notes=candidates,
-                ),
-                purpose="correction_reference_choice",
-            )
-            return True
-
-        if not isinstance(note, dict):
-            self.note_manager.mark_action_failed(message_id)
-            self._send_result_message(
-                message_id,
-                chat_id,
-                "\uc218\uc815\ud560 \uba54\ubaa8\ub97c \ucc3e\uc9c0 \ubabb\ud588\uc5b4.",
-                purpose="correction_target_missing",
-            )
-            return True
-
-        current_title = str(note.get("title") or "").strip()
-        current_summary = str(note.get("summary") or "").strip()
-        current_body = str(note.get("image_ocr_text") or note.get("body") or "").strip()
-        if old_text not in current_title and old_text not in current_summary and old_text not in current_body:
-            self.note_manager.mark_action_failed(message_id)
-            self._send_result_message(
-                message_id,
-                chat_id,
-                self._build_correction_miss_message(current_body),
-                purpose="correction_old_text_missing",
-            )
-            return True
-
-        updated_title = self._replace_note_fragment(current_title, old_text, new_text)
-        updated_summary = self._replace_note_fragment(current_summary, old_text, new_text)
-        updated_body = self._replace_note_fragment(current_body, old_text, new_text)
-        updated_note = self.note_manager.replace_note_text_fields(
-            note_id=str(note.get("id")),
-            new_title=updated_title or current_title,
-            new_summary=updated_summary or current_summary,
-            new_body=updated_body,
-            reason="user_correction",
-        )
-        self.note_manager.mark_processed(message_id)
-        self._remember_note_reference(
-            chat_id=str(chat_id),
-            sender_id=sender_id,
-            note_id=str(note.get("id")),
-        )
-        self.note_manager.set_conversation_state(
-            chat_id=str(chat_id),
-            sender_id=sender_id,
-            key="last_selected_note_id",
-            value={"note_id": str(note.get("id"))},
-        )
-        self._send_result_message(
-            message_id,
-            chat_id,
-            self._build_correction_success_message(
-                title=str((updated_note or note).get("title") or ""),
-                old_text=old_text,
-                new_text=new_text,
-                current_body=updated_body,
-            ),
-            purpose="correction_success",
-        )
-        return True
 
     def _resolve_note_reference(
         self,
@@ -1742,6 +2287,103 @@ class UpdateRouter:
             key="last_list_results",
             value={"note_ids": note_ids},
         )
+
+    def _store_and_build_note_page(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        notes: list[dict],
+        mode: str,
+        query: str,
+        page: int,
+        page_size: int = 10,
+    ) -> str:
+        total = len(notes)
+        total_pages = max((total + page_size - 1) // page_size, 1)
+        page = max(1, min(page, total_pages))
+        start = (page - 1) * page_size
+        page_notes = notes[start : start + page_size]
+        note_ids = [str(note.get("id")) for note in notes if note.get("id")]
+        page_note_ids = [str(note.get("id")) for note in page_notes if note.get("id")]
+
+        self.note_manager.set_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key="page_state",
+            value={
+                "mode": mode,
+                "query": query,
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "total_pages": total_pages,
+                "note_ids": note_ids,
+            },
+        )
+        self._remember_list_results(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            note_ids=page_note_ids,
+        )
+        if mode == "search":
+            self._remember_search_results(
+                chat_id=chat_id,
+                sender_id=sender_id,
+                note_ids=page_note_ids,
+                query=query,
+            )
+
+        return self._build_note_page_message(
+            notes=page_notes,
+            mode=mode,
+            query=query,
+            total=total,
+            page=page,
+            total_pages=total_pages,
+        )
+
+    def _filter_duplicate_groups_by_query(self, duplicate_groups: list[dict], text: str) -> list[dict]:
+        query = self._clean_dedupe_query(text)
+        if not query:
+            return duplicate_groups
+        filtered: list[dict] = []
+        for group in duplicate_groups:
+            notes = [group.get("keep_note") or {}] + list(group.get("duplicate_notes") or [])
+            haystack = " ".join(
+                " ".join(
+                    str(note.get(field) or "")
+                    for field in ("title", "summary", "body")
+                )
+                for note in notes
+            )
+            if query in self._normalize_text(haystack):
+                filtered.append(group)
+        return filtered
+
+    @classmethod
+    def _clean_dedupe_query(cls, text: str) -> str:
+        normalized = cls._normalize_text(text)
+        for phrase in (
+            "/dedupe",
+            "dedupe",
+            "\uc911\ubcf5\ub41c",
+            "\uc911\ubcf5",
+            "\uba54\ubaa8\ub4e4",
+            "\uba54\ubaa8",
+            "\ub178\ud2b8",
+            "\uc0ad\uc81c",
+            "\uc815\ub9ac",
+            "\ud574\uc918",
+            "\uc9c0\uae08",
+            "\ub4e4\uc911\uc5d0",
+            "\uc911\uc5d0",
+            "\uc911\uc5d0.",
+            "\uad00\ub828",
+        ):
+            normalized = normalized.replace(phrase, " ")
+        query = " ".join(normalized.split()).strip()
+        return query if len(query) >= 2 else ""
 
     def _clear_correction_state(self, *, chat_id: str, sender_id: str) -> None:
         for key in ("pending_correction", "pending_correction_note_id", "pending_correction_payload"):
@@ -1986,6 +2628,76 @@ class UpdateRouter:
         cleaned = re.sub(r"(?:\uc57c|\uc774\uc57c|\uc785\ub2c8\ub2e4)\s*$", "", cleaned)
         return cleaned.strip(" .!?\"'")
 
+    @classmethod
+    def _extract_fix_replace_pair(cls, text: str) -> tuple[str, str]:
+        stripped = text.strip()
+        patterns = (
+            r"(?:\d+\s*\ubc88\s*(?:\uba54\ubaa8|\ub178\ud2b8)?(?:\uc758|\uc5d0\uc11c)?\s*)?(?P<old>.+?)(?:\uc744|\ub97c)\s+(?P<new>.+?)(?:\uc73c\ub85c|\ub85c)\s*(?:\uc218\uc815|\ubcc0\uacbd|\ubc14\uafd4|\uace0\uccd0).*$",
+            r"(?:\d+\s*\ubc88\s*(?:\uba54\ubaa8|\ub178\ud2b8)?(?:\uc758|\uc5d0\uc11c)?\s*)?(?P<old>.+?)\s*(?:->|\u2192)\s*(?P<new>.+?)\s*$",
+            r"(?:\d+\s*\ubc88\s*(?:\uba54\ubaa8|\ub178\ud2b8)?(?:\uc758|\uc5d0\uc11c)?\s*)?(?P<old>.+?)\s+\ub9d0\uace0\s+(?P<new>.+?)(?:\s*(?:\uc218\uc815|\ubcc0\uacbd|\ubc14\uafd4|\uace0\uccd0).*)?$",
+            r"(?:\d+\s*\ubc88\s*(?:\uba54\ubaa8|\ub178\ud2b8)?(?:\uc758|\uc5d0\uc11c)?\s*)?(?P<old>.+?)(?:\uc774|\uac00)?\s*\uc544\ub2c8\ub77c\s+(?P<new>.+?)(?:\s*(?:\uc218\uc815|\ubcc0\uacbd|\ubc14\uafd4|\uace0\uccd0).*)?$",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, stripped, re.IGNORECASE)
+            if not match:
+                continue
+            old_text = cls._strip_fix_target_prefix(match.group("old"))
+            new_text = cls._strip_correction_suffix(match.group("new"))
+            if old_text:
+                return old_text, new_text
+        correction = cls._extract_correction_intent(stripped)
+        if correction is not None:
+            return correction.old_text or "", correction.new_text or ""
+        return "", ""
+
+    @classmethod
+    def _extract_add_parts(cls, text: str) -> tuple[str, str]:
+        stripped = text.strip()
+        patterns = (
+            r"^(?P<target>.+?(?:\uba54\ubaa8|\ub178\ud2b8))\s*(?:\uc5d0|\uc5d0\ub2e4\uac00|\uc73c\ub85c)?\s*(?P<content>.+?)(?:\s*(?:\ucd94\uac00|\ub367\ubd99\uc5ec|\ubd99\uc5ec)(?:\ud574\uc918|\ud574|\uc918)?)?$",
+            r"^(?P<target>\d+\s*\ubc88)\s*(?:\uba54\ubaa8|\ub178\ud2b8)?\s*(?:\uc5d0|\uc5d0\ub2e4\uac00)?\s*(?P<content>.+?)(?:\s*(?:\ucd94\uac00|\ub367\ubd99\uc5ec|\ubd99\uc5ec)(?:\ud574\uc918|\ud574|\uc918)?)?$",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, stripped)
+            if not match:
+                continue
+            target = match.group("target").strip(" .,:;\"'")
+            content = cls._strip_add_suffix(match.group("content"))
+            if content and not cls._looks_like_reference_only_text(content):
+                return target, content
+        return stripped, cls._strip_add_suffix(stripped)
+
+    @staticmethod
+    def _strip_add_suffix(value: str) -> str:
+        cleaned = value.strip(" .,:;\"'")
+        cleaned = re.sub(
+            r"\s*(?:\ucd94\uac00|\ub367\ubd99\uc5ec|\ubd99\uc5ec)(?:\ud574\uc918|\ud574|\uc918)?\s*$",
+            "",
+            cleaned,
+        )
+        return cleaned.strip(" .,:;\"'")
+
+    @classmethod
+    def _looks_like_summary_rewrite_request(cls, text: str) -> bool:
+        normalized = cls._normalize_text(text)
+        return "\uc694\uc57d" in normalized and any(hint in normalized for hint in SUMMARY_REWRITE_HINTS)
+
+    @staticmethod
+    def _strip_fix_target_prefix(value: str) -> str:
+        cleaned = value.strip(" .,:;\"'")
+        cleaned = re.sub(
+            r"^\d+\s*\ubc88\s*(?:\uba54\ubaa8|\ub178\ud2b8)?(?:\uc758|\uc5d0\uc11c)?\s*",
+            "",
+            cleaned,
+        )
+        cleaned = re.sub(
+            r"^(?:\uc774|\uadf8|\uc800|\ubc29\uae08)\s*(?:\uba54\ubaa8|\ub178\ud2b8)(?:\uc758|\uc5d0\uc11c)?\s*",
+            "",
+            cleaned,
+        )
+        cleaned = re.sub(r"^(?:\uba54\ubaa8|\ub178\ud2b8)(?:\uc758|\uc5d0\uc11c)?\s*", "", cleaned)
+        return cleaned.strip(" .,:;\"'")
+
     @staticmethod
     def _extract_selection_index(normalized: str) -> int | None:
         match = re.search(r"(\d+)\s*\ubc88", normalized)
@@ -2006,10 +2718,32 @@ class UpdateRouter:
     def _replace_note_fragment(text: str, old_text: str, new_text: str) -> str:
         if not text or old_text not in text:
             return text
-        updated = text.replace(old_text, new_text, 1)
+        updated = text.replace(old_text, new_text)
         updated = re.sub(r"^[\s:,-]+", "", updated)
         updated = re.sub(r"\s{2,}", " ", updated)
         return updated.strip()
+
+    @staticmethod
+    def _append_text_block(existing_text: str, append_text: str) -> str:
+        existing = existing_text.strip()
+        addition = append_text.strip()
+        if not existing:
+            return addition
+        if not addition:
+            return existing
+        return f"{existing}\n\n{addition}"
+
+    @staticmethod
+    def _append_summary(existing_summary: str, append_text: str) -> str:
+        summary = existing_summary.strip()
+        addition = " ".join(append_text.split()).strip()
+        if len(addition) > 90:
+            addition = addition[:87].rstrip() + "..."
+        if not summary:
+            return f"추가: {addition}" if addition else ""
+        if addition and addition not in summary:
+            return f"{summary} / 추가: {addition}"[:240]
+        return summary
 
     @staticmethod
     def _normalize_explicit_save_analysis(analysis: TextAnalysisResult, source_text: str) -> TextAnalysisResult:
@@ -2152,6 +2886,28 @@ class UpdateRouter:
             message += "\nNotion: \uc800\uc7a5 \uc2e4\ud328"
         return message
 
+    @classmethod
+    def _build_non_note_reply(cls, text: str) -> str:
+        normalized = cls._normalize_text(text)
+        if normalized in {"안녕", "안녕하세요", "하이", "hi", "hello", "헬로"}:
+            reply = "안녕. 필요한 메모 저장이나 조회가 있으면 바로 말해줘."
+        elif any(token in normalized for token in ("고마워", "감사", "thanks", "thank you")):
+            reply = "천만에. 필요하면 이어서 도와줄게."
+        elif any(token in normalized for token in ("날씨", "기온", "비 와", "비오", "눈 와", "눈오")):
+            reply = "지금은 실시간 날씨 조회 도구가 연결돼 있지 않아."
+        elif (
+            any(token in normalized for token in ("누구", "정체", "뭐야", "뭐니"))
+            and any(token in normalized for token in ("너", "넌", "너는", "당신", "봇"))
+        ):
+            reply = "나는 Telegram 메모 저장과 조회를 도와주는 노트 에이전트야."
+        elif normalized.endswith("?") or normalized.endswith("？") or any(token in normalized for token in ("뭐", "왜", "어떻게", "어때", "어떄", "누구", "언제", "어디")):
+            reply = ""
+        else:
+            reply = ""
+        if not reply:
+            return "메모로 저장하진 않았어."
+        return f"{reply}\n\n메모로 저장하진 않았어."
+
     @staticmethod
     def _build_search_results_message(notes: list[dict]) -> str:
         lines = [f"\uad00\ub828 \uba54\ubaa8 {min(len(notes), 5)}\uac1c\ub97c \ucc3e\uc558\uc5b4."]
@@ -2176,6 +2932,42 @@ class UpdateRouter:
                 lines.append(f"{index}. {title}\n{summary}")
             else:
                 lines.append(f"{index}. {title}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_note_page_message(
+        *,
+        notes: list[dict],
+        mode: str,
+        query: str,
+        total: int,
+        page: int,
+        total_pages: int,
+    ) -> str:
+        if not notes:
+            return "저장된 항목이 아직 없어." if mode != "search" else "관련 메모를 찾지 못했어."
+        if mode == "search":
+            header = f"관련 메모 {total}개를 찾았어."
+        else:
+            header = f"최근 저장된 항목 {total}개야."
+        lines = [header]
+        for index, note in enumerate(notes, start=1):
+            title = str(note.get("title") or "제목 없음").strip()
+            summary = str(note.get("summary") or "").strip()
+            if summary:
+                lines.append(f"{index}. {title}\n{summary}")
+            else:
+                lines.append(f"{index}. {title}")
+        lines.append("")
+        lines.append(f"({page} / {total_pages}) 페이지")
+        if total_pages > 1:
+            commands = []
+            if page > 1:
+                commands.append("/prev")
+            if page < total_pages:
+                commands.append("/next")
+            commands.append("/page 번호")
+            lines.append("다음 이동: " + ", ".join(commands))
         return "\n".join(lines)
 
     @staticmethod
@@ -2206,6 +2998,143 @@ class UpdateRouter:
                 lines.append(f"{index}\ubc88. {title}")
         return "\n".join(lines)
 
+    @classmethod
+    def _build_fix_preview_message(cls, note: dict, pending: dict) -> str:
+        title = str(note.get("title") or "제목 없음").strip()
+        old_text = str(pending.get("old_text") or "")
+        new_text = str(pending.get("new_text") or "")
+        old_body = str(pending.get("old_body") or "")
+        new_body = str(pending.get("new_body") or "")
+        lines = [
+            "수정 미리보기야. 아직 적용하지 않았어.",
+            "",
+            f"제목: {title}",
+            f"변경: {old_text} -> {new_text}",
+            "",
+            "[변경 전]",
+            cls._excerpt_around(old_body, old_text),
+            "",
+            "[변경 후]",
+            cls._excerpt_around(new_body, new_text or old_text),
+            "",
+            "적용하려면 '승인' 또는 '확인'이라고 보내. 취소하려면 '취소'라고 보내.",
+        ]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_fix_completed_message(note: dict, pending: dict) -> str:
+        title = str(note.get("title") or "제목 없음").strip()
+        old_text = str(pending.get("old_text") or "")
+        new_text = str(pending.get("new_text") or "")
+        return f"수정했어.\n\n제목: {title}\n변경: {old_text} -> {new_text}"
+
+    @classmethod
+    def _build_add_preview_message(cls, note: dict, pending: dict) -> str:
+        title = str(note.get("title") or "제목 없음").strip()
+        old_body = str(pending.get("old_body") or "")
+        new_body = str(pending.get("new_body") or "")
+        append_text = str(pending.get("append_text") or "")
+        lines = [
+            "추가 미리보기야. 아직 적용하지 않았어.",
+            "",
+            f"제목: {title}",
+            "",
+            "[추가할 내용]",
+            append_text,
+            "",
+            "[추가 전]",
+            cls._excerpt_around(old_body, "", radius=120),
+            "",
+            "[추가 후]",
+            cls._excerpt_around(new_body, append_text, radius=120),
+            "",
+            "적용하려면 '승인' 또는 '확인'이라고 보내. 취소하려면 '취소'라고 보내.",
+        ]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_add_completed_message(note: dict, pending: dict) -> str:
+        title = str(note.get("title") or "제목 없음").strip()
+        append_text = str(pending.get("append_text") or "")
+        return f"기존 메모에 추가했어.\n\n제목: {title}\n추가: {append_text}"
+
+    @staticmethod
+    def _build_summary_rewrite_preview_message(note: dict, pending: dict) -> str:
+        title = str(note.get("title") or "제목 없음").strip()
+        old_summary = str(pending.get("old_summary") or "").strip()
+        new_summary = str(pending.get("new_summary") or "").strip()
+        lines = [
+            "요약 재작성 미리보기야. 아직 적용하지 않았어.",
+            "",
+            f"제목: {title}",
+            "",
+            "[기존 요약]",
+            old_summary or "(비어 있음)",
+            "",
+            "[새 요약]",
+            new_summary,
+            "",
+            "적용하려면 '승인' 또는 '확인'이라고 보내. 취소하려면 '취소'라고 보내.",
+        ]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_summary_rewrite_completed_message(note: dict, pending: dict) -> str:
+        title = str(note.get("title") or "제목 없음").strip()
+        summary = str(pending.get("new_summary") or note.get("summary") or "").strip()
+        return f"요약을 다시 썼어.\n\n제목: {title}\n요약: {summary}"
+
+    @staticmethod
+    def _build_dedupe_preview_message(pending: dict) -> str:
+        groups = pending.get("groups") or []
+        duplicate_count = len(pending.get("duplicate_note_ids") or [])
+        lines = [
+            "중복 정리 미리보기야. 아직 삭제하지 않았어.",
+            "",
+            f"삭제 예정 중복 메모: {duplicate_count}개",
+            "본문이 정확히 같은 메모만 대상으로 했고, 각 그룹의 최신 메모는 남겨.",
+        ]
+        for index, group in enumerate(groups[:5], start=1):
+            keep_title = str(group.get("keep_title") or "제목 없음").strip()
+            duplicate_titles = [str(item).strip() for item in group.get("duplicate_titles") or [] if item]
+            lines.append("")
+            lines.append(f"{index}. 남김: {keep_title}")
+            if duplicate_titles:
+                lines.append("삭제: " + ", ".join(duplicate_titles[:3]))
+        lines.append("")
+        lines.append("적용하려면 '승인' 또는 '확인'이라고 보내. 취소하려면 '취소'라고 보내.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_dedupe_completed_message(deleted_count: int, pending: dict) -> str:
+        groups = pending.get("groups") or []
+        kept_titles = [
+            str(group.get("keep_title") or "").strip()
+            for group in groups
+            if str(group.get("keep_title") or "").strip()
+        ]
+        lines = [
+            f"중복 메모 {deleted_count}개를 삭제했어.",
+            "각 그룹의 최신 메모는 남겼어.",
+        ]
+        if kept_titles:
+            lines.append("남긴 메모: " + ", ".join(kept_titles[:3]))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _excerpt_around(text: str, needle: str, *, radius: int = 90) -> str:
+        compact = " ".join(text.split())
+        if not compact:
+            return ""
+        index = compact.find(needle) if needle else -1
+        if index < 0:
+            return compact[: radius * 2].strip()
+        start = max(index - radius, 0)
+        end = min(index + len(needle) + radius, len(compact))
+        prefix = "..." if start > 0 else ""
+        suffix = "..." if end < len(compact) else ""
+        return f"{prefix}{compact[start:end].strip()}{suffix}"
+
     @staticmethod
     def _build_pending_action_not_ready_message(command_name: str) -> str:
         examples = {
@@ -2224,16 +3153,19 @@ class UpdateRouter:
     @staticmethod
     def _build_slash_help_message(topic: str = "") -> str:
         topic = topic.strip().lower()
-        if topic in {"new", "add", "list", "show", "raw", "delete", "fix", "dedupe"}:
+        if topic in {"new", "add", "list", "next", "prev", "page", "show", "raw", "delete", "fix", "dedupe"}:
             details = {
                 "new": "/new 새 메모 내용\n새 NOTE를 바로 생성해. 예: /new 오늘 회의에서 v1 테스트를 먼저 하기로 함",
-                "add": "/add 대상 + 추가 내용\n기존 NOTE append용. 승인 preview 구현 후 실행 예정.",
+                "add": "/add 대상 + 추가 내용\n기존 NOTE에 내용을 추가하기 전에 preview를 보여주고, 승인 후 적용해.",
                 "list": "/list [검색어]\n최근 메모 또는 검색 결과를 보여줘. 예: /list 대수",
+                "next": "/next\n/list 결과의 다음 페이지를 보여줘.",
+                "prev": "/prev\n/list 결과의 이전 페이지를 보여줘.",
+                "page": "/page 번호\n/list 결과의 특정 페이지로 이동해. 예: /page 2",
                 "show": "/show 대상\n메모 상세를 보여줘. 예: /show 5번 메모, /show 대수 보고서 관련 메모",
                 "raw": "/raw 대상\n본문 또는 OCR 원문을 보여줘. 예: /raw 5번",
                 "delete": "/delete 대상\n삭제 대상을 찾고 확인을 받은 뒤 soft delete해.",
-                "fix": "/fix 대상 + 수정 지시\n기존 NOTE 수정용. 승인 preview 구현 후 실행 예정.",
-                "dedupe": "/dedupe [범위]\n중복 후보를 찾고 승인 후 정리하는 명령. 승인 preview 구현 후 실행 예정.",
+                "fix": "/fix 대상 + 수정 지시\n기존 NOTE를 수정하기 전에 변경 preview를 보여주고, 승인 후 적용해.",
+                "dedupe": "/dedupe [범위]\n본문이 정확히 같은 중복 후보를 보여주고, 승인 후 오래된 중복 메모를 soft delete해.",
             }
             return details[topic]
         return "\n".join(
@@ -2242,6 +3174,9 @@ class UpdateRouter:
                 "/new 새 메모 내용",
                 "/add 기존 메모에 추가할 내용",
                 "/list [검색어]",
+                "/next",
+                "/prev",
+                "/page 번호",
                 "/show 대상",
                 "/raw 대상",
                 "/delete 대상",
@@ -2772,6 +3707,29 @@ class UpdateRouter:
     @staticmethod
     def _normalize_text(text: str) -> str:
         return " ".join(text.strip().lower().split())
+
+    @classmethod
+    def _looks_like_pending_rejection(cls, text: str) -> bool:
+        normalized = cls._normalize_text(text)
+        token = normalized.strip(" .!?？")
+        if token in ACTION_CANCEL_HINTS:
+            return True
+        return re.match(r"^(?:\uc544\ub2c8|\uc544\ub2c8\uc57c|\ucde8\uc18c)(?:[\s.!?]|$)", normalized) is not None
+
+    def _has_pending_confirmation(self, *, chat_id: str, sender_id: str) -> bool:
+        pending_action = self.note_manager.get_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key="pending_action",
+        )
+        if pending_action:
+            return True
+        pending_delete = self.note_manager.get_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key="pending_delete_note_id",
+        )
+        return bool(pending_delete)
 
     @staticmethod
     def _is_note_search_request(text: str | None) -> bool:

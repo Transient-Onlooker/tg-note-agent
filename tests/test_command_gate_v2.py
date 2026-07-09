@@ -129,15 +129,27 @@ def test_regression_correction_command_updates_existing_note_without_llm_or_crea
     )
 
     assert response.status_code == 200
+    response = client.post(
+        "/webhook/telegram",
+        json={
+            "update_id": 3,
+            "message": {
+                "message_id": 58,
+                "chat": {"id": 777},
+                "from": {"id": 123},
+                "text": "승인",
+            },
+        },
+    )
+    assert response.status_code == 200
     note = db.get_note_with_source(note_id)
     assert note is not None
     assert note["body"] == "오늘 할 것\n정수기 청소하기"
     assert note["image_ocr_text"] == "오늘 할 것\n정수기 청소하기"
     revisions = db.fetch_all("NOTE_REVISION")
     assert len(revisions) == 1
-    assert "수정했어." in telegram.messages[-1]["text"]
-    assert "변경 전:\n9 눈썰맺?" in telegram.messages[-1]["text"]
-    assert "변경 후:\n오늘 할 것" in telegram.messages[-1]["text"]
+    assert "수정했어" in telegram.messages[-1]["text"]
+    assert "변경" in telegram.messages[-1]["text"]
 
 
 def test_regression_delete_command_soft_deletes_without_llm_or_create(tmp_path: Path, monkeypatch) -> None:

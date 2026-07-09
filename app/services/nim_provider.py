@@ -206,6 +206,8 @@ class NvidiaNIMProvider:
                         "If the source text is already a short single-sentence note, the summary may closely mirror the source text. "
                         "If the source text is longer than one sentence, summary must be an abstractive 1-2 sentence Korean summary, not a copied prefix or truncated excerpt. "
                         "For long source text, compress the central meaning and omit examples unless they are essential. "
+                        "Important dates, deadlines, times, durations, and schedule expressions from the source must appear in either the title or summary, preferably both when concise. "
+                        "Never drop dates such as '7월 9일', '2026-07-09', '내일', deadlines, or meeting times from metadata. "
                         "tags must be an array of short strings. "
                         "confidence must be a number between 0 and 1. "
                         "Prefer reusing existing tags when they already match the content. "
@@ -645,6 +647,7 @@ class NvidiaNIMProvider:
 
         title = str(parsed.get("title", "")).strip() or self._fallback_title(source_text)
         summary = str(parsed.get("summary", "")).strip() or self._fallback_summary(source_text)
+        title, summary = self._preserve_important_temporal_info(source_text, title, summary)
         tags = self._normalize_tags(parsed.get("tags"))
         category = str(parsed.get("category", fallback_category)).strip() or fallback_category
         confidence = self._coerce_confidence(parsed.get("confidence"))
@@ -1033,6 +1036,50 @@ class NvidiaNIMProvider:
         if value is None:
             return None
         return cls._coerce_bool(value, default=False)
+
+    @classmethod
+    def _preserve_important_temporal_info(
+        cls,
+        source_text: str,
+        title: str,
+        summary: str,
+    ) -> tuple[str, str]:
+        temporal_items = cls._extract_temporal_items(source_text)
+        if not temporal_items:
+            return title, summary
+
+        combined = f"{title} {summary}"
+        missing = [item for item in temporal_items if item not in combined]
+        if not missing:
+            return title, summary
+
+        prefix = " / ".join(missing[:3])
+        if title and all(item not in title for item in missing[:1]) and len(title) <= 54:
+            title = f"{prefix} - {title}"[:80]
+        if summary:
+            summary = f"{prefix}: {summary}"
+        else:
+            summary = prefix
+        return title, summary
+
+    @staticmethod
+    def _extract_temporal_items(source_text: str) -> list[str]:
+        patterns = (
+            r"\b\d{4}[-./년]\s*\d{1,2}[-./월]\s*\d{1,2}\s*(?:일)?\b",
+            r"\b\d{1,2}\s*월\s*\d{1,2}\s*일(?:까지|까지는|까지로|에|부터|까지)?",
+            r"\b\d{1,2}\s*/\s*\d{1,2}(?:까지|에|부터)?",
+            r"\b\d{1,2}\s*시\s*(?:\d{1,2}\s*분)?(?:까지|부터|에)?",
+            r"\b(?:오전|오후)\s*\d{1,2}\s*시\s*(?:\d{1,2}\s*분)?",
+            r"\b(?:오늘|내일|모레|이번\s*주|다음\s*주|이번\s*달|다음\s*달|월요일|화요일|수요일|목요일|금요일|토요일|일요일)(?:까지|까지는|에|부터)?",
+            r"\b(?:마감|기한|데드라인|deadline)\s*[:：]?\s*[^\s,.;!?]{1,24}",
+        )
+        items: list[str] = []
+        for pattern in patterns:
+            for match in re.finditer(pattern, source_text, flags=re.IGNORECASE):
+                item = " ".join(match.group(0).split()).strip(" ,.;!?")
+                if item and item not in items:
+                    items.append(item)
+        return items[:5]
 
     @staticmethod
     def _fallback_title(source_text: str) -> str:

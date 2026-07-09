@@ -1,5 +1,5 @@
 flowchart TD
-    In["Telegram message / photo"] --> Store["Store MESSAGE immediately"]
+    In["Telegram message / photo / document"] --> Store["Store MESSAGE immediately"]
     Store --> Ack["Best-effort immediate ack"]
     Ack --> AckFail{"Ack send failed?"}
     AckFail -->|Yes| AckWarn["logger.warning<br/>webhook still returns 200"]
@@ -10,6 +10,8 @@ flowchart TD
     State --> Gate{"Deterministic command gate first"}
 
     Gate -->|Slash command| Slash["Pin intent by command<br/>resolve flexible argument"]
+    Gate -->|Natural command request| NLRouter["Natural-language router<br/>map text to internal command"]
+    NLRouter --> Slash
     Slash -->|/new| NewNote["Create new NOTE<br/>AI title / summary / tags"]
     Slash -->|/add /fix /delete /dedupe| Approval["Store pending_action<br/>preview + approval required"]
     Slash -->|/list /show over 10| Page["Paginated reply<br/>page_state + /next /prev"]
@@ -40,6 +42,10 @@ flowchart TD
     Existing -->|Unclear| Review["MESSAGE.status=needs_review"]
     Existing -->|General photo| PhotoOnly["Archive only"]
 
+    In -->|Document / PDF| Document["Store document file metadata"]
+    Document --> Extract["Extract text<br/>PDF parser first, OCR fallback"]
+    Extract --> DocNote["Create NOTE<br/>AI title / summary / tags<br/>preserve file reference"]
+
     Numbered --> Reply["Best-effort result reply"]
     NewNote --> Reply
     Approval --> Reply
@@ -58,6 +64,7 @@ flowchart TD
     ImageNote --> Reply
     Review --> Reply
     PhotoOnly --> Reply
+    DocNote --> Reply
 
     Reply --> ReplyFail{"Result send failed?"}
     ReplyFail -->|Yes| ReplyFailed["MESSAGE.status=reply_failed<br/>logger.warning"]

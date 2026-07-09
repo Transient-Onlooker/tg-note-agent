@@ -6,7 +6,7 @@ This is a short working roadmap for the current Telegram-first note agent.
 
 Current stabilization status: webhook outbound messaging is best-effort, command gate runs before AI save routing, explicit save prefixes are stripped before note persistence, numbered references are backed by conversation state, text/image corrections update the stored note fields, and regression tests cover those paths.
 
-Command UX direction: slash commands should pin intent while leaving arguments flexible. `/new` creates a new note, `/add` appends to an existing note, and existing-note mutations such as `/add`, `/fix`, `/delete`, and `/dedupe` require an approval step. See `docs/COMMANDS.md`.
+Command UX direction: slash commands should pin intent while leaving arguments flexible. `/new` creates a new note, `/add` appends to an existing note, and existing-note mutations such as `/add`, `/fix`, `/delete`, and `/dedupe` require an approval step. After the slash-command prototype is stable, a natural-language router should map ordinary Korean requests into the same internal command actions without requiring `/`. See `docs/COMMANDS.md`.
 
 ## Delivery Phases
 
@@ -22,6 +22,10 @@ Command UX direction: slash commands should pin intent while leaving arguments f
    Target window: `2026-07-08` to `2026-07-09`
    Scope: `/new`, `/add`, `/list`, `/show`, `/raw`, `/delete`, `/fix`, `/dedupe`, `/help`; Telegram command menu registration; pagination over 10 results; approval state for mutating existing notes
 
+2.6. `v1.7` natural-language command router
+   Target window: after `v1.6`
+   Scope: route ordinary Korean requests into internal command actions (`new`, `list`, `show`, `add`, `fix`, `delete`, `dedupe`) while preserving preview/approval for mutations
+
 3. `v2` image intake
    Target window: `2026-07-03` to `2026-07-05`
    Scope: photo archive, OCR, note-vs-photo classification, OCR correction, clarification loop
@@ -30,9 +34,17 @@ Command UX direction: slash commands should pin intent while leaving arguments f
    Target window: `2026-07-03` to `2026-07-06`
    Scope: scan all notes, propose merge, approve/cancel, delete merged note
 
+4.5. `v2.2` document/PDF intake
+   Target window: after `v2.1`
+   Scope: Telegram document attachments, PDF text extraction/OCR fallback, file metadata storage, long-document summarization, and follow-up commands against saved document notes
+
 5. `v2.5` agent expansion
    Target window: `2026-07-05` to `2026-07-08`
    Scope: more AI-callable tools, richer multi-step routing, Notion-first sync strategy
+
+6. `v2.6` Google Workspace integrations
+   Target window: after `v2.5`
+   Scope: Google Calendar event create/search/update tools, Google Chat notification or command surface, Workspace OAuth/token storage, and approval rules for mutating calendar/workspace data
 
 ## Mermaid
 
@@ -64,6 +76,10 @@ gantt
     Pagination for list/show        :v16d, after v16b, 1d
     Approval for add/fix/delete     :v16e, after v16c, 1d
 
+    section v1.7 Natural Router
+    Natural language command routing:v17a, after v16e, 2d
+    Keep approval safety boundary   :v17b, after v17a, 1d
+
     section v2 Images
     Telegram image ingest           :done, v2a, 2026-07-03, 1d
     Local archive                   :done, v2b, 2026-07-03, 1d
@@ -76,8 +92,19 @@ gantt
     Approve / cancel / soft delete  :done, v21b, 2026-07-04, 1d
     Merge summary refresh           :active, v21c, 2026-07-05, 1d
 
+    section v2.2 Documents
+    Telegram document intake         :v22a, after v21c, 1d
+    PDF text extraction / OCR fallback:v22b, after v22a, 2d
+    Long-document summary + commands :v22c, after v22b, 1d
+
     section v2.5 Agent Expansion
-    More dynamic tools              :v25a, 2026-07-05, 2d
+    More dynamic tools              :v25a, after v22c, 2d
     Multi-step agent loop           :v25b, after v25a, 2d
     Notion sync strategy            :v25c, after v25b, 1d
+
+    section v2.6 Google Workspace
+    Workspace OAuth/token storage   :v26a, after v25c, 1d
+    Google Calendar tools           :v26b, after v26a, 2d
+    Google Chat integration         :v26c, after v26b, 1d
+    Approval for external mutations :v26d, after v26b, 1d
 ```

@@ -13,7 +13,7 @@ flowchart LR
     Router --> Manager["NoteManager"]
     Router --> DB["SQLite"]
 
-    Gate --> State["CONVERSATION_STATE<br/>last_list_results / last_search_results<br/>last_selected_note_id / last_image_note_id<br/>pending_delete_note_id"]
+    Gate --> State["CONVERSATION_STATE<br/>last_list_results / last_search_results<br/>page_state / pending_action<br/>last_selected_note_id / last_image_note_id<br/>pending_delete_note_id"]
     Gate --> Revisions["NOTE_REVISION<br/>body correction audit"]
     Prep --> BG
     BG --> NIM["NVIDIA NIM<br/>router + text + vision"]

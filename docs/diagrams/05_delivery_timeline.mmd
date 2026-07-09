@@ -24,6 +24,10 @@ gantt
     Pagination for list/show             :v16d, after v16b, 1d
     Approval for add/fix/delete/dedupe   :v16e, after v16c, 1d
 
+    section v1.7 Natural Router
+    Natural language to internal commands:v17a, after v16e, 2d
+    Approval boundary stays deterministic:v17b, after v17a, 1d
+
     section v2 Image Intake
     Photo archive                       :done, v2a, 2026-07-03, 1d
     OCR + note/photo classification     :done, v2b, 2026-07-03, 2d
@@ -35,7 +39,18 @@ gantt
     Approve / cancel / soft delete flow :done, v21b, 2026-07-04, 1d
     Merge-summary refinement            :active, v21c, 2026-07-05, 1d
 
+    section v2.2 Documents
+    Telegram document intake             :v22a, after v21c, 1d
+    PDF text extraction / OCR fallback   :v22b, after v22a, 2d
+    Long-document summary + commands     :v22c, after v22b, 1d
+
     section v2.5 Agent Expansion
-    More tools for dynamic routing      :active, v25a, 2026-07-05, 2d
+    More tools for dynamic routing      :active, v25a, after v22c, 2d
     Multi-step agent loop               :v25b, after v25a, 2d
     Notion-first sync strategy          :v25c, after v25b, 1d
+
+    section v2.6 Google Workspace
+    Workspace OAuth/token storage       :v26a, after v25c, 1d
+    Google Calendar tools               :v26b, after v26a, 2d
+    Google Chat integration             :v26c, after v26b, 1d
+    Approval for external mutations     :v26d, after v26b, 1d

@@ -252,23 +252,26 @@ def test_slash_list_show_delete_are_command_gate_only(tmp_path: Path, monkeypatc
     }
 
 
-def test_slash_mutating_commands_do_not_save_before_approval_flow_exists(tmp_path: Path, monkeypatch) -> None:
+def test_slash_dedupe_previews_before_delete(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
     client, db, telegram = build_client(tmp_path, FastPathForbiddenNIMProvider())
-    _insert_text_note(db, message_id="slash-3", title="대수 메모", body="대수 본문")
+    duplicate_body = "대수 본문"
+    _insert_text_note(db, message_id="slash-3", title="대수 메모 1", body=duplicate_body)
+    _insert_text_note(db, message_id="slash-4", title="대수 메모 2", body=duplicate_body)
 
-    for offset, text in enumerate(
-        (
-            "/add 1번 메모에 후속 내용 추가",
-            "/fix 1번 메모의 대수를 확률과 통계로 수정",
-            "/dedupe 대수 관련 메모",
-        ),
-        start=1,
-    ):
-        response = _post_text(client, message_id=1020 + offset, text=text)
-        assert response.status_code == 200
-        assert len(db.fetch_all("NOTE")) == 1
-        assert "메모로 저장하지도 않았어" in telegram.messages[-1]["text"]
+    response = _post_text(client, message_id=1021, text="/dedupe 대수 관련 메모")
+
+    assert response.status_code == 200
+    assert len([note for note in db.fetch_all("NOTE") if note["deleted_at"] is None]) == 2
+    assert "중복 정리 미리보기" in telegram.messages[-1]["text"]
+    pending = db.get_conversation_state(chat_id="777", sender_id="123", key="pending_action")
+    assert pending["type"] == "dedupe"
+
+    response = _post_text(client, message_id=1022, text="승인")
+
+    assert response.status_code == 200
+    assert len([note for note in db.fetch_all("NOTE") if note["deleted_at"] is None]) == 1
+    assert "중복 메모 1개를 삭제했어" in telegram.messages[-1]["text"]
 
 
 def test_unknown_slash_command_is_not_saved_as_note(tmp_path: Path, monkeypatch) -> None:
@@ -403,6 +406,31 @@ def test_delete_request_and_confirm_are_idempotent(tmp_path: Path, monkeypatch) 
     assert "삭제 대기" in telegram.messages[-1]["text"]
 
 
+def test_delete_request_can_be_cancelled_with_no(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, FastPathForbiddenNIMProvider())
+    note_id = _insert_text_note(db, message_id="source-delete-cancel", title="삭제 취소 대상", body="삭제 취소 테스트")
+    db.set_conversation_state(
+        chat_id="777",
+        sender_id="123",
+        key="last_selected_note_id",
+        value={"note_id": note_id},
+    )
+
+    response = _post_text(client, message_id=2021, text="/delete")
+    assert response.status_code == 200
+    assert db.get_conversation_state(chat_id="777", sender_id="123", key="pending_delete_note_id") == {
+        "note_id": note_id,
+    }
+
+    response = _post_text(client, message_id=2022, text="아니")
+
+    assert response.status_code == 200
+    assert db.get_note(note_id) is not None
+    assert db.get_conversation_state(chat_id="777", sender_id="123", key="pending_delete_note_id") is None
+    assert "삭제를 취소" in telegram.messages[-1]["text"]
+
+
 def test_duplicate_delete_request_does_not_save_command_as_note(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
     client, db, telegram = build_client(tmp_path, FastPathForbiddenNIMProvider())
@@ -422,11 +450,21 @@ def test_duplicate_delete_request_does_not_save_command_as_note(tmp_path: Path, 
     active_notes = [note for note in notes if note["deleted_at"] is None]
     deleted_notes = [note for note in notes if note["deleted_at"] is not None]
     assert len(notes) == 3
+    assert len(active_notes) == 3
+    assert len(deleted_notes) == 0
+    assert not any(note["body"].startswith("\uc911\ubcf5\ub41c \uba54\ubaa8") for note in notes)
+    assert "중복 정리 미리보기" in telegram.messages[-1]["text"]
+
+    response = _post_text(client, message_id=1026, text="승인")
+
+    assert response.status_code == 200
+    notes = db.fetch_all("NOTE")
+    active_notes = [note for note in notes if note["deleted_at"] is None]
+    deleted_notes = [note for note in notes if note["deleted_at"] is not None]
     assert len(active_notes) == 2
     assert len(deleted_notes) == 1
     assert deleted_notes[0]["body"] == duplicate_body
-    assert not any(note["body"].startswith("\uc911\ubcf5\ub41c \uba54\ubaa8") for note in notes)
-    assert "\uc911\ubcf5 \uba54\ubaa8 1\uac1c" in telegram.messages[-1]["text"]
+    assert "중복 메모 1개" in telegram.messages[-1]["text"]
 
 
 def test_ocr_correction_updates_note_and_image_without_llm(tmp_path: Path, monkeypatch) -> None:
@@ -442,12 +480,16 @@ def test_ocr_correction_updates_note_and_image_without_llm(tmp_path: Path, monke
 
     response = _post_text(client, message_id=1031, text="9 눈썰맺? 이 아니라 오늘 할 것이야. 수정해줘")
     assert response.status_code == 200
+    assert "수정 미리보기" in telegram.messages[-1]["text"]
+
+    response = _post_text(client, message_id=1032, text="승인")
+    assert response.status_code == 200
     note = db.get_note_with_source(note_id)
     assert note["body"] == "오늘 할 것\nX ~ B(n, p)"
     assert note["image_ocr_text"] == "오늘 할 것\nX ~ B(n, p)"
     assert len(db.fetch_all("NOTE_REVISION")) == 1
-    assert "변경 전" in telegram.messages[-1]["text"]
-    assert "변경 후" in telegram.messages[-1]["text"]
+    assert "변경 전" in telegram.messages[-3]["text"]
+    assert "변경 후" in telegram.messages[-3]["text"]
 
 
 def test_correction_without_explicit_fix_word_and_technical_ocr_note(tmp_path: Path, monkeypatch) -> None:
@@ -462,6 +504,9 @@ def test_correction_without_explicit_fix_word_and_technical_ocr_note(tmp_path: P
     )
 
     response = _post_text(client, message_id=1041, text="9월 첫값이 아니라, 오늘 할것 이야.")
+    assert response.status_code == 200
+
+    response = _post_text(client, message_id=1043, text="승인")
     assert response.status_code == 200
     assert db.get_note_with_source(note_id)["image_ocr_text"] == "오늘 할것\n정수기 청소"
     assert len(db.fetch_all("NOTE")) == 1
@@ -636,6 +681,8 @@ def test_correction_after_new_save_targets_new_note_not_stale_selection(tmp_path
     response = _post_text(client, message_id=1056, text="NEW_SELECTION_TOKEN. 를 삭제해")
 
     assert response.status_code == 200
+    response = _post_text(client, message_id=1057, text="승인")
+    assert response.status_code == 200
     assert db.get_note_with_source(stale_note_id)["body"] == "오래된 본문"
     updated_new_note = db.get_note_with_source(new_note_id)
     assert updated_new_note["body"] == "새 저장 메모가 수정 대상이어야 한다."
@@ -660,6 +707,8 @@ def test_delete_phrase_correction_updates_title_summary_and_body(tmp_path: Path,
 
     response = _post_text(client, message_id=1053, text="메모로 저장해줘: 를 삭제해")
 
+    assert response.status_code == 200
+    response = _post_text(client, message_id=1054, text="승인")
     assert response.status_code == 200
     note = db.get_note_with_source(note_id)
     assert note["title"] == "개발 로그"

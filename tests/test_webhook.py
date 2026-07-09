@@ -515,6 +515,36 @@ def test_degraded_note_summary_does_not_masquerade_as_ai_summary() -> None:
     assert result.confidence == 0.05
 
 
+def test_nim_provider_preserves_temporal_info_in_metadata() -> None:
+    provider = NvidiaNIMProvider(
+        api_key="test-key",
+        base_url="https://example.com/v1",
+        model="text-model",
+    )
+
+    data = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        '{"title":"확률과 통계 보고서",'
+                        '"summary":"불확실한 사건을 수치로 분석하는 학문에 대한 보고서를 작성한다.",'
+                        '"tags":["확률과 통계"],"category":"note","confidence":0.9}'
+                    )
+                }
+            }
+        ]
+    }
+
+    result = provider._build_analysis_result(
+        data,
+        source_text="7월 9일까지 보고서 작성. 확률과 통계는 불확실한 사건을 수치로 분석한다.",
+        fallback_category="note",
+    )
+
+    assert "7월 9일까지" in f"{result.title} {result.summary}"
+
+
 def build_client(
     tmp_path: Path,
     nim_provider,
@@ -629,6 +659,76 @@ def test_non_note_text_is_not_saved_as_note(tmp_path: Path, monkeypatch) -> None
     assert len(db.fetch_all("NOTE")) == 0
     assert len(db.fetch_all("AI_ANALYSIS")) == 0
     assert db.fetch_all("MESSAGE")[0]["status"] == "processed"
+    assert telegram.messages[1]["text"].endswith("메모로 저장하진 않았어.")
+    assert "실시간 날씨 조회 도구" in telegram.messages[1]["text"]
+
+
+def test_greeting_reply_is_not_saved_but_answers_chat(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, IgnoreTextNIMProvider())
+
+    response = client.post(
+        "/webhook/telegram",
+        json={
+            "update_id": 1,
+            "message": {
+                "message_id": 58,
+                "chat": {"id": 777},
+                "from": {"id": 123},
+                "text": "안녕",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(db.fetch_all("NOTE")) == 0
+    assert "안녕" in telegram.messages[1]["text"]
+    assert telegram.messages[1]["text"].endswith("메모로 저장하진 않았어.")
+
+
+def test_identity_question_reply_is_not_over_explanatory(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, IgnoreTextNIMProvider())
+
+    response = client.post(
+        "/webhook/telegram",
+        json={
+            "update_id": 1,
+            "message": {
+                "message_id": 59,
+                "chat": {"id": 777},
+                "from": {"id": 123},
+                "text": "넌 누구니",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(db.fetch_all("NOTE")) == 0
+    assert "노트 에이전트" in telegram.messages[1]["text"]
+    assert "메모 명령이나 저장할 내용" not in telegram.messages[1]["text"]
+    assert telegram.messages[1]["text"].endswith("메모로 저장하진 않았어.")
+
+
+def test_generic_question_reply_is_minimal_when_not_handled(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, IgnoreTextNIMProvider())
+
+    response = client.post(
+        "/webhook/telegram",
+        json={
+            "update_id": 1,
+            "message": {
+                "message_id": 60,
+                "chat": {"id": 777},
+                "from": {"id": 123},
+                "text": "9+9=?",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(db.fetch_all("NOTE")) == 0
     assert telegram.messages[1]["text"] == "메모로 저장하진 않았어."
 
 
