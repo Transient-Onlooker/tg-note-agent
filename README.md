@@ -44,6 +44,15 @@ Already checked on the current local setup:
 - `.gitignore` excludes `.env`, local SQLite files, generated logs, and image files.
 - `testterminal.bat` is available for local bot-style testing without opening Telegram.
 
+The test terminal also accepts local images and PDFs:
+
+    /image "C:\\path\\photo.jpg" | optional caption
+    /pdf "C:\\path\\document.pdf" | optional caption
+
+`/image` runs the existing Telegram photo/OCR path using the local file. `/pdf` processes pages in order, keeps sufficient embedded text, and sends the largest directly encoded JPEG page image to vision OCR when text is missing. It then sends the merged page text through `/new` to test title and summary generation. Pages that require full PDF rasterization or non-JPEG image decoding are reported as OCR failures because native PDF/image extensions may be blocked by Windows application-control policy.
+
+PDF test limits can be changed with `TESTTERMINAL_PDF_MAX_PAGES` (default `12`), `TESTTERMINAL_PDF_MAX_CHARS` (default `30000`), and `TESTTERMINAL_PDF_MIN_TEXT_CHARS` (default `20`).
+
 Before live Telegram testing:
 
 - Start the FastAPI server and ngrok tunnel.
