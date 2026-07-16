@@ -36,7 +36,7 @@ Command UX direction: slash commands should pin intent while leaving arguments f
 
 4.5. `v2.2` document/PDF intake
    Target window: after `v2.1`
-   Scope: Telegram document attachments, PDF text extraction/OCR fallback, file metadata storage, long-document summarization, and follow-up commands against saved document notes
+   Scope: Telegram document attachments, original file metadata storage, per-page embedded text extraction, scanned-page detection, page image rendering with vision OCR fallback, page-boundary-preserving merge, long-document summarization, page-range processing, and follow-up commands against saved document notes
 
 5. `v2.5` agent expansion
    Target window: `2026-07-05` to `2026-07-08`
@@ -94,11 +94,14 @@ gantt
 
     section v2.2 Documents
     Telegram document intake         :v22a, after v21c, 1d
-    PDF text extraction / OCR fallback:v22b, after v22a, 2d
-    Long-document summary + commands :v22c, after v22b, 1d
+    Per-page embedded text extraction:v22b, after v22a, 1d
+    Scanned-page detect + image render:v22c, after v22b, 1d
+    Vision OCR fallback              :v22d, after v22c, 2d
+    Page merge + document summary    :v22e, after v22d, 1d
+    Page-range + follow-up commands  :v22f, after v22e, 1d
 
     section v2.5 Agent Expansion
-    More dynamic tools              :v25a, after v22c, 2d
+    More dynamic tools              :v25a, after v22f, 2d
     Multi-step agent loop           :v25b, after v25a, 2d
     Notion sync strategy            :v25c, after v25b, 1d
 

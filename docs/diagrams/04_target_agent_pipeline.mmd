@@ -42,9 +42,18 @@ flowchart TD
     Existing -->|Unclear| Review["MESSAGE.status=needs_review"]
     Existing -->|General photo| PhotoOnly["Archive only"]
 
-    In -->|Document / PDF| Document["Store document file metadata"]
-    Document --> Extract["Extract text<br/>PDF parser first, OCR fallback"]
-    Extract --> DocNote["Create NOTE<br/>AI title / summary / tags<br/>preserve file reference"]
+    In -->|Document / PDF| Document["Store original file<br/>and document metadata"]
+    Document --> PageLoop["Process PDF page by page<br/>preserve page numbers"]
+    PageLoop --> TextCheck{"Enough embedded text<br/>on this page?"}
+    TextCheck -->|Yes| EmbeddedText["Keep parser text"]
+    TextCheck -->|No| RenderPage["Render page to image<br/>at OCR resolution"]
+    RenderPage --> PageOCR["Vision OCR<br/>using NIM_VISION_MODEL"]
+    EmbeddedText --> PageText["Store page text + source type"]
+    PageOCR --> PageText
+    PageText --> MorePages{"More selected pages?"}
+    MorePages -->|Yes| PageLoop
+    MorePages -->|No| MergeDoc["Merge in page order<br/>keep page boundaries"]
+    MergeDoc --> DocNote["Create NOTE<br/>AI title / summary / tags<br/>preserve file reference"]
 
     Numbered --> Reply["Best-effort result reply"]
     NewNote --> Reply
