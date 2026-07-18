@@ -11,7 +11,14 @@ from fastapi import BackgroundTasks
 
 from app.integrations.telegram import TelegramClient
 from app.models.db import DuplicateMessageError, StoredMessage
-from app.models.schemas import TelegramMessage, TelegramPhotoSize, TelegramUpdate, TextAnalysisResult, WebhookResult
+from app.models.schemas import (
+    TelegramMessage,
+    TelegramPhotoSize,
+    TelegramUpdate,
+    TextAnalysisResult,
+    WebhookResult,
+    remove_han_ideographs,
+)
 from app.services.image_archive import ImageArchive
 from app.services.nim_provider import NIMProviderError, NvidiaNIMProvider
 from app.services.note_manager import NoteManager
@@ -191,6 +198,9 @@ LIST_ALL_PHRASES = (
     "\uc804\uccb4 \uba54\ubaa8 \ubaa9\ub85d",
     "\ubaa8\ub4e0 \uba54\ubaa8",
     "\uc5ec\ud0dc\uae4c\uc9c0 \uc800\uc7a5\ub41c \uba54\ubaa8",
+    "\ud604\uc7ac \uc800\uc7a5\ub41c \uba54\ubaa8",
+    "\uc800\uc7a5\ub41c \uba54\ubaa8 \ubaa8\ub450",
+    "\uc800\uc7a5\ub41c \uba54\ubaa8 \uc804\ubd80",
     "\uc800\uc7a5\ub41c \uba54\ubaa8\ub4e4",
     "\uc804\uccb4 \ubaa9\ub85d",
     "\uba54\ubaa8 \ubaa9\ub85d",
@@ -2733,9 +2743,12 @@ class UpdateRouter:
     @staticmethod
     def _extract_selection_index(normalized: str) -> int | None:
         match = re.search(r"(\d+)\s*\ubc88", normalized)
-        if match:
-            return max(int(match.group(1)) - 1, 0)
-        return None
+        if match is None:
+            match = re.fullmatch(r"\s*(\d+)\s*", normalized)
+        if match is None:
+            return None
+        number = int(match.group(1))
+        return number - 1 if number > 0 else None
 
     @classmethod
     def _looks_like_reference_only_text(cls, text: str) -> bool:
@@ -3881,7 +3894,7 @@ class UpdateRouter:
 
     @classmethod
     def _sanitize_agent_response(cls, text: str, tool_history: list[dict]) -> str:
-        normalized = text.replace("\r\n", "\n").strip()
+        normalized = remove_han_ideographs(text.replace("\r\n", "\n").strip())
         if not normalized:
             return cls._build_agent_fallback_message(tool_history)
         normalized = re.sub(r"^\s*#+\s*", "", normalized, flags=re.MULTILINE)
@@ -4008,7 +4021,7 @@ class UpdateRouter:
 
     @classmethod
     def _sanitize_search_message(cls, summary: str, notes: list[dict]) -> str:
-        normalized = summary.replace("\r\n", "\n").strip()
+        normalized = remove_han_ideographs(summary.replace("\r\n", "\n").strip())
         if not normalized:
             return cls._build_local_search_message(notes)
 

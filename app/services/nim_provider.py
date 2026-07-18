@@ -201,13 +201,15 @@ class NvidiaNIMProvider:
                         "Return strict JSON with keys title, summary, tags, category, confidence. "
                         "Do not include markdown or extra text. "
                         "title and summary must be written in Korean. "
+                        "Never use Chinese characters or Hanja in title, summary, or tags; use Korean or English words instead. "
                         "summary must always be Korean, even if the source text mixes English and Korean. "
                         "Preserve the user's stated meaning; do not reinterpret test sentences as tasks, bug reports, or requirements unless the user explicitly asks to create a task. "
                         "If the source text is already a short single-sentence note, the summary may closely mirror the source text. "
                         "If the source text is longer than one sentence, summary must be an abstractive 1-2 sentence Korean summary, not a copied prefix or truncated excerpt. "
                         "For long source text, compress the central meaning and omit examples unless they are essential. "
-                        "Important dates, deadlines, times, durations, and schedule expressions from the source must appear in either the title or summary, preferably both when concise. "
-                        "Never drop dates such as '7월 9일', '2026-07-09', '내일', deadlines, or meeting times from metadata. "
+                        "Preserve dates and times only when they clearly describe a future plan, appointment, task, or deadline. "
+                        "Narrative times from past events, such as '3시까지 기다렸다', are context and must not be promoted or prepended as deadlines. "
+                        "Never infer a deadline from the Korean particle '까지' alone. "
                         "tags must be an array of short strings. "
                         "confidence must be a number between 0 and 1. "
                         "Prefer reusing existing tags when they already match the content. "
@@ -267,6 +269,7 @@ class NvidiaNIMProvider:
                         "Extract image text as faithfully as possible into ocr_text before summarizing it. "
                         "Do not translate Korean into English. "
                         "title and summary must be written in Korean. "
+                        "Never use Chinese characters or Hanja in title, summary, or tags; use Korean or English words instead. "
                         "Set is_note true only when the image is clearly a note, document, whiteboard, screenshot, or text-heavy memo. "
                         "Set needs_user_clarification true when text is unreadable or intent is ambiguous. "
                         "ocr_text should contain the original readable text from the image, or an empty string if none is readable. "
@@ -334,6 +337,7 @@ class NvidiaNIMProvider:
                         "Use only the provided notes. "
                         "Be concise and include the most relevant note titles. "
                         "Return plain text only in Korean. "
+                        "Never use Chinese characters or Hanja; rewrite them in Korean or English. "
                         "Do not use markdown tables, headings, bullets with asterisks, or code fences."
                     ),
                 },
@@ -501,6 +505,7 @@ class NvidiaNIMProvider:
                         "You merge two personal notes into one clean note summary. "
                         "Return strict JSON with keys title, summary, tags, category, confidence. "
                         "title and summary must be written in Korean. "
+                        "Never use Chinese characters or Hanja in title, summary, or tags; use Korean or English words instead. "
                         "tags must be an array of short strings. "
                         "Prefer reusing existing tags when they fit. "
                         "Set category to note. "
@@ -1048,8 +1053,19 @@ class NvidiaNIMProvider:
         if not temporal_items:
             return title, summary
 
+        actionable_items = [
+            item for item in temporal_items if cls._is_actionable_temporal_item(source_text, item)
+        ]
+        for item in temporal_items:
+            if item not in actionable_items:
+                title = cls._remove_temporal_prefix(title, item)
+                summary = cls._remove_temporal_prefix(summary, item)
+
+        if not actionable_items:
+            return title, summary
+
         combined = f"{title} {summary}"
-        missing = [item for item in temporal_items if item not in combined]
+        missing = [item for item in actionable_items if item not in combined]
         if not missing:
             return title, summary
 
@@ -1061,6 +1077,60 @@ class NvidiaNIMProvider:
         else:
             summary = prefix
         return title, summary
+
+    @staticmethod
+    def _remove_temporal_prefix(value: str, item: str) -> str:
+        cleaned = re.sub(
+            rf"^\s*{re.escape(item)}\s*(?:[-–—:：/]\s*)?",
+            "",
+            value,
+            count=1,
+            flags=re.IGNORECASE,
+        ).strip()
+        return cleaned or value
+
+    @staticmethod
+    def _is_actionable_temporal_item(source_text: str, item: str) -> bool:
+        lowered = source_text.lower()
+        index = lowered.find(item.lower())
+        if index < 0:
+            return False
+
+        before = lowered[max(0, index - 32):index]
+        after = lowered[index + len(item):index + len(item) + 64]
+        nearby = f"{before} {item.lower()} {after}"
+        explicit_schedule_hints = ("마감", "기한", "데드라인", "deadline", "일정", "예약")
+        if any(hint in nearby for hint in explicit_schedule_hints):
+            return True
+
+        past_context_hints = ("어제", "지난", "예전에", "전에")
+        past_action_hints = ("기다렸", "했었", "했는데", "했지만", "이었다", "였는데", "취소했", "못했")
+        if any(hint in before for hint in past_context_hints):
+            return False
+        if any(hint in after[:40] for hint in past_action_hints):
+            return False
+
+        future_action_hints = (
+            "작성",
+            "제출",
+            "완료",
+            "시작",
+            "하기",
+            "해야",
+            "하자",
+            "할 것",
+            "제작",
+            "예약",
+            "방문",
+            "출발",
+            "회의",
+            "수업",
+            "숙제",
+            "공부",
+            "읽기",
+            "보내기",
+        )
+        return any(hint in after for hint in future_action_hints)
 
     @staticmethod
     def _extract_temporal_items(source_text: str) -> list[str]:

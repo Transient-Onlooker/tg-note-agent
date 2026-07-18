@@ -252,6 +252,39 @@ def test_slash_list_show_delete_are_command_gate_only(tmp_path: Path, monkeypatc
     }
 
 
+def test_slash_delete_bare_number_uses_numbered_list_before_selected_note(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, FastPathForbiddenNIMProvider())
+    created_note_ids = [
+        _insert_text_note(
+            db,
+            message_id=f"slash-delete-number-{index}",
+            title=f"목록 메모 {index}",
+            body=f"목록 본문 {index}",
+        )
+        for index in range(1, 7)
+    ]
+
+    response = _post_text(client, message_id=1015, text="/list")
+    assert response.status_code == 200
+    list_note_ids = list(reversed(created_note_ids))
+    db.set_conversation_state(
+        chat_id="777",
+        sender_id="123",
+        key="last_selected_note_id",
+        value={"note_id": list_note_ids[0]},
+    )
+
+    response = _post_text(client, message_id=1016, text="/delete 5")
+
+    assert response.status_code == 200
+    assert db.get_conversation_state(chat_id="777", sender_id="123", key="pending_delete_note_id") == {
+        "note_id": list_note_ids[4],
+    }
+    assert "제목: 목록 메모 2" in telegram.messages[-1]["text"]
+    assert len(db.fetch_all("NOTE")) == 6
+
+
 def test_slash_dedupe_previews_before_delete(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
     client, db, telegram = build_client(tmp_path, FastPathForbiddenNIMProvider())
@@ -313,6 +346,22 @@ def test_full_list_command_has_priority_over_read_and_correction(tmp_path: Path,
     assert "1. 둘째 메모" in telegram.messages[-1]["text"]
     assert "2. 첫 메모" in telegram.messages[-1]["text"]
 
+
+def test_current_saved_notes_all_is_list_command(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, telegram = build_client(tmp_path, FastPathForbiddenNIMProvider())
+    first_note_id = _insert_text_note(db, message_id="list-current-1", title="첫 메모", body="첫 본문")
+    second_note_id = _insert_text_note(db, message_id="list-current-2", title="둘째 메모", body="둘째 본문")
+
+    response = _post_text(client, message_id=1010, text="현재 저장된 메모 모두 알려줘")
+
+    assert response.status_code == 200
+    assert len(db.fetch_all("NOTE")) == 2
+    assert db.get_conversation_state(chat_id="777", sender_id="123", key="last_list_results") == {
+        "note_ids": [second_note_id, first_note_id],
+    }
+    assert "최근 저장된 항목 2개야." in telegram.messages[-1]["text"]
+    assert "관련 메모를 찾지 못했어" not in telegram.messages[-1]["text"]
 
 def test_discourse_prefix_with_all_notes_stays_list_command(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")

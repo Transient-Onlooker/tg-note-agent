@@ -11,6 +11,10 @@ This document reflects the current hybrid implementation:
 - Broad list/show results should paginate at 10 items per page and keep page state in `CONVERSATION_STATE`.
 - AI routing is used only after command-gate miss, with a safety net preventing meta commands from becoming NOTE create/append.
 - Explicit save prefixes are removed before analysis; an explicit save forces NOTE persistence even if AI routing says ignore.
+- Planned batch-list capture preserves a multi-line message as one raw NOTE and extracts sections/items; it only splits into separate notes after an explicit user request.
+- Bare numeric slash arguments such as `/delete 5` resolve item 5 from `last_list_results` before any previously selected note.
+- AI-generated titles, summaries, tags, search answers, and agent answers remove Han ideographs; raw NOTE bodies and OCR text remain unchanged.
+- Temporal metadata is promoted only for clear plans, appointments, tasks, or deadlines, not past narrative context such as `3시까지 기다렸다`.
 - Correction records `NOTE_REVISION` and can update `NOTE.title`, `NOTE.summary`, `NOTE.body`, `IMAGE_FILE.ocr_text`, and `IMAGE_FILE.summary`.
 - Same-chat context remains bounded to 30 minutes for follow-up interpretation.
 
@@ -33,10 +37,14 @@ flowchart LR
     Router --> Gate["Deterministic command gate"]
     Gate --> Slash["Slash commands<br/>/new /add /list /show /raw<br/>/fix /delete /dedupe /help"]
     Gate --> Natural["Natural commands<br/>read, search, list, count<br/>correction, delete, numbered reference"]
-    Gate --> State["CONVERSATION_STATE<br/>result ids, page state, selection<br/>pending action, pending delete"]
+    Gate --> State["CONVERSATION_STATE<br/>result ids, page state, selection<br/>bare number resolves current list first<br/>pending action, pending delete"]
     Gate --> Revision["NOTE_REVISION<br/>correction audit"]
 
     Router --> Prep["Prepare note text<br/>strip prefix; explicit save forces create"]
+    Prep --> Capture["Batch-list capture - planned<br/>preserve one raw NOTE; detect sections and items"]
+    Capture --> Split{"Explicitly request<br/>separate notes?"}
+    Split -->|No or ambiguous| OneNote["Keep one NOTE<br/>with structured list metadata"]
+    Split -->|Yes| ManyNotes["Create or propose<br/>separate notes per section"]
     Prep --> AI["NVIDIA NIM<br/>route, analyze, vision"]
     Router --> Archive["ImageArchive"]
     Archive --> FileAPI["Telegram file API"]
@@ -44,12 +52,14 @@ flowchart LR
     Router --> Manager["NoteManager"]
     Manager --> DB[("SQLite")]
     Archive --> DB
-    AI --> Manager
+    AI --> MetadataGuard["Generated metadata guard<br/>remove Han ideographs<br/>preserve only actionable schedule times"]
+    MetadataGuard --> Manager
 
     DB --> Message["MESSAGE<br/>received, processed, reply_failed"]
     DB --> Note["NOTE<br/>soft delete fields"]
     DB --> Image["IMAGE_FILE<br/>OCR text and classification"]
     DB --> Tags["TAG and NOTE_TAG"]
+    DB --> Items["NOTE_LIST_ITEM - planned<br/>section, text, completion state"]
     DB --> Merge["MERGE_PROPOSAL"]
 
     Router --> Reply["Best-effort result reply"]
@@ -93,6 +103,7 @@ sequenceDiagram
                 alt Slash command
                     R->>R: Pin command intent
                     R->>D: Resolve note target and page state
+                    Note over R,D: Bare number such as /delete 5 resolves current list item 5 before prior selection
                     alt Existing-note mutation
                         R->>D: Save pending_action preview
                     else List or show
@@ -100,6 +111,7 @@ sequenceDiagram
                     else New note
                         R->>M: Analyze note text
                         M-->>R: Title, summary, tags
+                        R->>R: Remove Han; preserve only actionable schedule times
                         R->>D: Create NOTE
                     end
                 else Read, search, recent, count
@@ -124,12 +136,15 @@ sequenceDiagram
                 R->>M: Route and analyze text
                 M-->>R: create, append, ignore, or tool
                 R->>R: Explicit save stays create even if AI route is ignore
+                R->>R: Sanitize generated title, summary, tags, and AI answer
+                Note over R: Raw NOTE body and OCR text remain unchanged
                 R->>D: Persist NOTE or execute read-only tool
                 R->>T: Best-effort result reply
             else Photo flow
                 R->>D: Insert IMAGE_FILE
                 R->>M: OCR and image classification
                 M-->>R: OCR text, summary, type, confidence
+                R->>R: Preserve OCR text; sanitize generated metadata
                 R->>D: Update IMAGE_FILE
                 alt NOTE already linked to this image
                     R->>D: Reuse existing NOTE and update reference state
@@ -254,10 +269,21 @@ erDiagram
         datetime created_at
     }
 
+    NOTE_LIST_ITEM {
+        string id PK
+        string note_id FK
+        string section_label
+        text body
+        int position
+        boolean is_completed
+        datetime created_at
+    }
+
     MESSAGE ||--o| NOTE : creates_or_updates
     MESSAGE ||--o{ AI_ANALYSIS : analyzed_by
     MESSAGE ||--o{ IMAGE_FILE : archives
     NOTE ||--o{ NOTE_REVISION : revises
+    NOTE ||--o{ NOTE_LIST_ITEM : contains_planned
     NOTE ||--o{ NOTE_TAG : labels
     TAG ||--o{ NOTE_TAG : belongs_to
     NOTE ||--o{ MERGE_PROPOSAL : keep_target
@@ -284,7 +310,7 @@ flowchart TD
     Command --> Resolve
 
     Resolve -->|List or search| List["Read active notes<br/>save result ids and page state"]
-    Resolve -->|Numbered reference| Select["Resolve current result set<br/>save selected note"]
+    Resolve -->|Numbered reference| Select["Resolve current result set<br/>bare slash number uses list first<br/>save selected note"]
     Resolve -->|Read original| Read["Return NOTE body or IMAGE_FILE OCR text"]
     Resolve -->|Correction| Correct["Insert NOTE_REVISION<br/>sync NOTE body and IMAGE_FILE OCR text"]
     Resolve -->|Delete request| DeleteAsk["Save pending delete target"]
@@ -297,15 +323,22 @@ flowchart TD
     Gate -->|No command| Meta{"Meta command?"}
     Meta -->|Yes| NoSave["Do not create or append"]
     Meta -->|No| Prep["Strip explicit save prefix<br/>explicit save forces create<br/>load context and candidates"]
-    Prep --> Agent["AI router and tools"]
+    Prep --> Batch{"Multi-line list capture? - planned"}
+    Batch -->|No| Agent["AI router and tools"]
+    Batch -->|Yes| Structure["Preserve raw body in one NOTE<br/>detect sections and checklist items"]
+    Structure --> Split{"Explicitly asks to split<br/>into separate notes?"}
+    Split -->|No or ambiguous| ListNote["Create one list NOTE<br/>save item metadata for future tools"]
+    Split -->|Yes| SplitNotes["Create or propose notes<br/>per section"]
     Agent --> AgentAction{"AI action"}
-    AgentAction -->|Create, append, or explicit save| Save["Persist NOTE and AI_ANALYSIS"]
+    AgentAction -->|Create, append, or explicit save| Metadata["Validate generated metadata<br/>remove Han ideographs<br/>keep actionable schedule times only"]
+    Metadata --> Save["Persist NOTE and AI_ANALYSIS<br/>raw body unchanged"]
     AgentAction -->|Read-only tool| Tool["Query active notes, tags, merge candidates"]
     AgentAction -->|Ignore without explicit save| Ignore["Mark MESSAGE processed"]
 
     Input -->|Photo| Image["Archive IMAGE_FILE"]
     Image --> Vision["Vision OCR and classification"]
-    Vision --> ImageData["Update OCR text, summary<br/>image type, confidence"]
+    Vision --> ImageMetadata["Preserve OCR original<br/>sanitize generated metadata"]
+    ImageMetadata --> ImageData["Update OCR text, summary<br/>image type, confidence"]
     ImageData --> Existing{"Existing NOTE for image?"}
     Existing -->|Yes| Reuse["Reuse NOTE and save image reference"]
     Existing -->|No, note image| ImageNote["Create NOTE and last_image_note_id"]
@@ -327,6 +360,8 @@ flowchart TD
     NoSave --> Reply
     Save --> Reply
     Tool --> Reply
+    ListNote --> Reply
+    SplitNotes --> Reply
     Ignore --> Reply
     Reuse --> Reply
     ImageNote --> Reply

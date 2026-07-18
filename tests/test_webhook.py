@@ -545,6 +545,36 @@ def test_nim_provider_preserves_temporal_info_in_metadata() -> None:
     assert "7월 9일까지" in f"{result.title} {result.summary}"
 
 
+def test_nim_provider_does_not_promote_past_narrative_time_to_deadline() -> None:
+    provider = NvidiaNIMProvider(
+        api_key="test-key",
+        base_url="https://example.com/v1",
+        model="text-model",
+    )
+    data = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        '{"title":"3시까지 - 친구 연락 문제",'
+                        '"summary":"3시까지: 친구의 늦은 연락으로 신뢰 문제가 생겼다는 불만.",'
+                        '"tags":["친구"],"category":"note","confidence":0.9}'
+                    )
+                }
+            }
+        ]
+    }
+
+    result = provider._build_analysis_result(
+        data,
+        source_text="어제 친구의 연락을 3시까지 기다렸는데 답이 없어서 속상했다.",
+        fallback_category="note",
+    )
+
+    assert result.title == "친구 연락 문제"
+    assert result.summary == "친구의 늦은 연락으로 신뢰 문제가 생겼다는 불만."
+
+
 def build_client(
     tmp_path: Path,
     nim_provider,

@@ -12,10 +12,14 @@ flowchart LR
     Router --> Gate["Deterministic command gate"]
     Gate --> Slash["Slash commands<br/>/new /add /list /show /raw<br/>/fix /delete /dedupe /help"]
     Gate --> Natural["Natural commands<br/>read, search, list, count<br/>correction, delete, numbered reference"]
-    Gate --> State["CONVERSATION_STATE<br/>result ids, page state, selection<br/>pending action, pending delete"]
+    Gate --> State["CONVERSATION_STATE<br/>result ids, page state, selection<br/>bare number resolves current list first<br/>pending action, pending delete"]
     Gate --> Revision["NOTE_REVISION<br/>correction audit"]
 
     Router --> Prep["Prepare note text<br/>strip prefix; explicit save forces create"]
+    Prep --> Capture["Batch-list capture - planned<br/>preserve one raw NOTE; detect sections and items"]
+    Capture --> Split{"Explicitly request<br/>separate notes?"}
+    Split -->|No or ambiguous| OneNote["Keep one NOTE<br/>with structured list metadata"]
+    Split -->|Yes| ManyNotes["Create or propose<br/>separate notes per section"]
     Prep --> AI["NVIDIA NIM<br/>route, analyze, vision"]
     Router --> Archive["ImageArchive"]
     Archive --> FileAPI["Telegram file API"]
@@ -23,12 +27,14 @@ flowchart LR
     Router --> Manager["NoteManager"]
     Manager --> DB[("SQLite")]
     Archive --> DB
-    AI --> Manager
+    AI --> MetadataGuard["Generated metadata guard<br/>remove Han ideographs<br/>preserve only actionable schedule times"]
+    MetadataGuard --> Manager
 
     DB --> Message["MESSAGE<br/>received, processed, reply_failed"]
     DB --> Note["NOTE<br/>soft delete fields"]
     DB --> Image["IMAGE_FILE<br/>OCR text and classification"]
     DB --> Tags["TAG and NOTE_TAG"]
+    DB --> Items["NOTE_LIST_ITEM - planned<br/>section, text, completion state"]
     DB --> Merge["MERGE_PROPOSAL"]
 
     Router --> Reply["Best-effort result reply"]

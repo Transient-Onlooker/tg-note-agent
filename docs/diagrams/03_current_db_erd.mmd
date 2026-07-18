@@ -100,10 +100,21 @@ erDiagram
         datetime created_at
     }
 
+    NOTE_LIST_ITEM {
+        string id PK
+        string note_id FK
+        string section_label
+        text body
+        int position
+        boolean is_completed
+        datetime created_at
+    }
+
     MESSAGE ||--o| NOTE : creates_or_updates
     MESSAGE ||--o{ AI_ANALYSIS : analyzed_by
     MESSAGE ||--o{ IMAGE_FILE : archives
     NOTE ||--o{ NOTE_REVISION : revises
+    NOTE ||--o{ NOTE_LIST_ITEM : contains_planned
     NOTE ||--o{ NOTE_TAG : labels
     TAG ||--o{ NOTE_TAG : belongs_to
     NOTE ||--o{ MERGE_PROPOSAL : keep_target
