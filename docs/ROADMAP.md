@@ -37,6 +37,7 @@ Command UX direction: slash commands should pin intent while leaving arguments f
 4.5. `v2.2` document/PDF intake
    Target window: after `v2.1`
    Scope: Telegram document attachments, original file metadata storage, per-page embedded text extraction, scanned-page detection, page image rendering with vision OCR fallback, page-boundary-preserving merge, long-document summarization, page-range processing, and follow-up commands against saved document notes
+   Current prototype: `testterminal.bat` accepts local images and PDFs. PDF pages use embedded text first and can send directly encoded JPEG XObjects to vision OCR without PyMuPDF/Pillow. Telegram document intake, full page rasterization, and non-JPEG scan decoding remain pending.
 
 5. `v2.5` agent expansion
    Target window: `2026-07-05` to `2026-07-08`
@@ -93,15 +94,17 @@ gantt
     Merge summary refresh           :active, v21c, 2026-07-05, 1d
 
     section v2.2 Documents
-    Telegram document intake         :v22a, after v21c, 1d
-    Per-page embedded text extraction:v22b, after v22a, 1d
-    Scanned-page detect + image render:v22c, after v22b, 1d
-    Vision OCR fallback              :v22d, after v22c, 2d
-    Page merge + document summary    :v22e, after v22d, 1d
-    Page-range + follow-up commands  :v22f, after v22e, 1d
+    Local image simulation           :done, v22a, 2026-07-16, 1d
+    PDF embedded-text prototype      :done, v22b, 2026-07-16, 1d
+    JPEG XObject vision OCR          :done, v22c, 2026-07-16, 1d
+    Remove blocked native renderers  :done, v22d, 2026-07-16, 1d
+    Telegram document intake         :v22e, after v22d, 1d
+    Full scanned-page rasterization  :v22f, after v22e, 2d
+    Page merge + document summary    :v22g, after v22f, 1d
+    Page-range + follow-up commands  :v22h, after v22g, 1d
 
     section v2.5 Agent Expansion
-    More dynamic tools              :v25a, after v22f, 2d
+    More dynamic tools              :v25a, after v22h, 2d
     Multi-step agent loop           :v25b, after v25a, 2d
     Notion sync strategy            :v25c, after v25b, 1d
 

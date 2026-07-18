@@ -3,6 +3,21 @@ flowchart LR
     Bot -->|Webhook| Tunnel["ngrok tunnel"]
     Tunnel --> API["FastAPI `/webhook/telegram`"]
 
+    Tester["Developer<br/>testterminal.bat"] --> Terminal["Local test terminal"]
+    Terminal -->|Text command| LocalText["Build TelegramUpdate"]
+    LocalText --> Router
+    Terminal -->|/image local path| LocalPhoto["Fake Telegram photo<br/>serve local file bytes"]
+    LocalPhoto --> Router
+    Terminal -->|/pdf local path| LocalPDF["pypdf page loop"]
+    LocalPDF --> EmbeddedCheck{"Enough embedded text?"}
+    EmbeddedCheck -->|Yes| PdfPageText["Keep page text"]
+    EmbeddedCheck -->|No| JpegExtract["Extract direct JPEG XObject<br/>no native PDF renderer"]
+    JpegExtract -->|Found| NIM
+    JpegExtract -->|Unsupported page| PdfFailed["Report OCR failed page"]
+    NIM --> PdfPageText
+    PdfPageText --> PdfNew["Merge page boundaries<br/>send through internal /new"]
+    PdfNew --> Router
+
     API --> Router["UpdateRouter"]
     Router --> Ack["Best-effort outbound<br/>ack + result replies"]
     Ack -->|sendMessage fails| ReplyFailed["Log warning<br/>MESSAGE.status=reply_failed for result replies"]
