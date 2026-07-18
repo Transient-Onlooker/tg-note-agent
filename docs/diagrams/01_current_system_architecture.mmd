@@ -1,52 +1,36 @@
 flowchart LR
-    User["User<br/>Telegram app"] --> Bot["Telegram Bot"]
-    Bot -->|Webhook| Tunnel["ngrok tunnel"]
-    Tunnel --> API["FastAPI `/webhook/telegram`"]
-
-    Tester["Developer<br/>testterminal.bat"] --> Terminal["Local test terminal"]
-    Terminal -->|Text command| LocalText["Build TelegramUpdate"]
-    LocalText --> Router
-    Terminal -->|/image local path| LocalPhoto["Fake Telegram photo<br/>serve local file bytes"]
-    LocalPhoto --> Router
-    Terminal -->|/pdf local path| LocalPDF["pypdf page loop"]
-    LocalPDF --> EmbeddedCheck{"Enough embedded text?"}
-    EmbeddedCheck -->|Yes| PdfPageText["Keep page text"]
-    EmbeddedCheck -->|No| JpegExtract["Extract direct JPEG XObject<br/>no native PDF renderer"]
-    JpegExtract -->|Found| NIM
-    JpegExtract -->|Unsupported page| PdfFailed["Report OCR failed page"]
-    NIM --> PdfPageText
-    PdfPageText --> PdfNew["Merge page boundaries<br/>send through internal /new"]
-    PdfNew --> Router
-
+    User["User in Telegram"] --> Telegram["Telegram Bot API"]
+    Telegram -->|webhook update| Tunnel["ngrok tunnel"]
+    Tunnel --> API["FastAPI /webhook/telegram"]
     API --> Router["UpdateRouter"]
-    Router --> Ack["Best-effort outbound<br/>ack + result replies"]
-    Ack -->|sendMessage fails| ReplyFailed["Log warning<br/>MESSAGE.status=reply_failed for result replies"]
-    Router --> BG["BackgroundTasks"]
-    Router --> Gate["Deterministic command gate<br/>read / search / recent / count<br/>correction / delete / numbered reference"]
-    Router --> Prep["Save text preparation<br/>strip explicit save prefixes"]
+
+    Terminal["testterminal.bat"] -->|simulated text, image, PDF| Router
+
+    Router --> Store["Store MESSAGE and dedupe"]
+    Router --> Ack["Best-effort immediate ACK"]
+    Ack -->|failure| AckLog["warning only; webhook still returns 200"]
+    Router --> Gate["Deterministic command gate"]
+    Gate --> Slash["Slash commands<br/>/new /add /list /show /raw<br/>/fix /delete /dedupe /help"]
+    Gate --> Natural["Natural commands<br/>read, search, list, count<br/>correction, delete, numbered reference"]
+    Gate --> State["CONVERSATION_STATE<br/>result ids, page state, selection<br/>pending action, pending delete"]
+    Gate --> Revision["NOTE_REVISION<br/>correction audit"]
+
+    Router --> Prep["Prepare note text<br/>strip prefix; explicit save forces create"]
+    Prep --> AI["NVIDIA NIM<br/>route, analyze, vision"]
     Router --> Archive["ImageArchive"]
+    Archive --> FileAPI["Telegram file API"]
+
     Router --> Manager["NoteManager"]
-    Router --> DB["SQLite"]
-
-    Gate --> State["CONVERSATION_STATE<br/>last_list_results / last_search_results<br/>page_state / pending_action<br/>last_selected_note_id / last_image_note_id<br/>pending_delete_note_id"]
-    Gate --> Revisions["NOTE_REVISION<br/>body correction audit"]
-    Prep --> BG
-    BG --> NIM["NVIDIA NIM<br/>router + text + vision"]
-    BG --> FastTools["AI tools after gate miss<br/>tags / merge / fallback reads"]
-    BG --> AgentFallback["Read-focused fallback agent"]
-
-    Manager --> DB
-    Archive --> TGFile["Telegram file API"]
+    Manager --> DB[("SQLite")]
     Archive --> DB
-    NIM --> Manager
-    NIM --> FastTools
-    NIM --> AgentFallback
+    AI --> Manager
 
-    DB --> Msg["MESSAGE / TELEGRAM_MESSAGE_DEDUPE"]
-    DB --> Notes["NOTE / AI_ANALYSIS<br/>soft delete fields"]
-    DB --> Tags["TAG / NOTE_TAG"]
-    DB --> Media["IMAGE_FILE<br/>ocr_text / summary / image_type / confidence"]
+    DB --> Message["MESSAGE<br/>received, processed, reply_failed"]
+    DB --> Note["NOTE<br/>soft delete fields"]
+    DB --> Image["IMAGE_FILE<br/>OCR text and classification"]
+    DB --> Tags["TAG and NOTE_TAG"]
     DB --> Merge["MERGE_PROPOSAL"]
 
-    Msg --> Context["Recent same-chat context<br/>last 30 min"]
-    Context --> NIM
+    Router --> Reply["Best-effort result reply"]
+    Reply -->|success| Telegram
+    Reply -->|failure| ReplyFailed["Log warning and set<br/>MESSAGE.status = reply_failed"]

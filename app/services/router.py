@@ -895,6 +895,8 @@ class UpdateRouter:
         correction = self._extract_correction_intent(text)
         if correction is not None:
             return correction
+        if self._looks_like_natural_add_request(normalized):
+            return CommandIntent(name="add_request")
 
         if self._looks_like_delete_request(normalized):
             return CommandIntent(name="delete_request")
@@ -1035,6 +1037,14 @@ class UpdateRouter:
                 chat_id=chat_id,
                 sender_id=sender_id,
                 approved=False,
+            )
+
+        if command.name == "add_request":
+            return self._handle_add_request(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                text=text,
             )
 
         if command.name == "correct_last_note":
@@ -2668,6 +2678,28 @@ class UpdateRouter:
         return stripped, cls._strip_add_suffix(stripped)
 
     @staticmethod
+    def _looks_like_natural_add_request(normalized: str) -> bool:
+        request_pattern = (
+            r"(?:\ucd94\uac00|\ub367\ubd99\uc5ec|\ubd99\uc5ec)"
+            r"(?:\ud574\uc918|\ud574|\uc918|\uc8fc\uc138\uc694|\uc8fc\ub77c|\ubd80\ud0c1\ud574)?[.!?]*$"
+        )
+        reference_hints = (
+            "\uadf8 \uba54\ubaa8",
+            "\uc774 \uba54\ubaa8",
+            "\uc800 \uba54\ubaa8",
+            "\ubc29\uae08 \uba54\ubaa8",
+            "\uae30\uc874 \uba54\ubaa8",
+            "\uadf8 \ub178\ud2b8",
+            "\uc774 \ub178\ud2b8",
+            "\uc800 \ub178\ud2b8",
+        )
+        has_numbered_reference = re.search(r"\d+\s*\ubc88", normalized) is not None
+        return (
+            re.search(request_pattern, normalized) is not None
+            and (has_numbered_reference or any(hint in normalized for hint in reference_hints))
+        )
+
+    @staticmethod
     def _strip_add_suffix(value: str) -> str:
         cleaned = value.strip(" .,:;\"'")
         cleaned = re.sub(
@@ -2813,9 +2845,9 @@ class UpdateRouter:
     def _has_explicit_note_save_request(text: str) -> bool:
         normalized = text.strip()
         patterns = (
-            r"^(?:\uba54\ubaa8\ub85c\s*)?\uc800\uc7a5\ud574(?:줘|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
-            r"^\uba54\ubaa8\s*(?:\ub85c\s*)?\ub0a8\uaca8(?:줘|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
-            r"^\uae30\ub85d\ud574(?:줘|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
+            r"^(?:\uba54\ubaa8\ub85c\s*)?\uc800\uc7a5\ud574(?:\uc918|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
+            r"^\uba54\ubaa8\s*(?:\ub85c\s*)?\ub0a8\uaca8(?:\uc918|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
+            r"^\uae30\ub85d\ud574(?:\uc918|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
         )
         return any(re.match(pattern, normalized) for pattern in patterns)
 
@@ -2830,9 +2862,9 @@ class UpdateRouter:
     def _prepare_text_for_note_save(text: str) -> str:
         cleaned = text.strip()
         patterns = (
-            r"^(?:\uba54\ubaa8\ub85c\s*)?\uc800\uc7a5\ud574(?:줘|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
-            r"^\uba54\ubaa8\s*(?:\ub85c\s*)?\ub0a8\uaca8(?:줘|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
-            r"^\uae30\ub85d\ud574(?:줘|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
+            r"^(?:\uba54\ubaa8\ub85c\s*)?\uc800\uc7a5\ud574(?:\uc918|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
+            r"^\uba54\ubaa8\s*(?:\ub85c\s*)?\ub0a8\uaca8(?:\uc918|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
+            r"^\uae30\ub85d\ud574(?:\uc918|\uc8fc\uc138\uc694|\uc8fc\ub77c)?\s*[:,-]?\s*",
         )
         for pattern in patterns:
             cleaned = re.sub(pattern, "", cleaned, count=1)

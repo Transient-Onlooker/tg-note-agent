@@ -10,132 +10,78 @@ sequenceDiagram
     U->>T: Send text or photo
     T->>N: Webhook request
     N->>A: POST /webhook/telegram
-    A->>R: handle_update(...)
-    R->>D: dedupe check
+    A->>R: handle_update(update)
+    R->>D: Dedupe check
 
-    alt duplicate update
+    alt Duplicate update
         R-->>A: ignored
         A-->>T: 200 OK
-    else new update
-        R->>D: insert MESSAGE(status=received)
-        R-->>T: best-effort sendMessage("수신 완료.")
-        alt ack send fails
-            R->>R: logger.warning only
-        else ack send succeeds
-            R->>R: continue
+    else New update
+        R->>D: Insert MESSAGE(status=received)
+        R->>T: Best-effort sendMessage("Received.")
+        alt ACK delivery fails
+            R->>R: Log warning only
         end
         R-->>A: accepted
         A-->>T: 200 OK
 
-        par background processing
-            alt text flow
-                R->>D: load CONVERSATION_STATE
-                alt deterministic command gate before AI
-                    alt slash command
-                        R->>R: pin intent from command name
-                        R->>D: resolve flexible argument with DB search or AI helper
-                        alt /new
-                            R->>D: create NOTE without approval
-                        else mutating existing note
-                            R->>D: store pending_action preview
-                            R-->>T: best-effort approval request
-                        else list/show over 10 results
-                            R->>D: store page_state
-                            R-->>T: best-effort page reply
-                        end
-                    else numbered reference
-                        R->>D: resolve from last_list_results then last_search_results
-                        R->>D: set last_selected_note_id
-                        R->>D: update MESSAGE(status=processed)
-                        R-->>T: best-effort selection guidance
-                    else read original / OCR
-                        R->>D: read NOTE + MESSAGE + IMAGE_FILE
-                        R->>D: prefer IMAGE_FILE.ocr_text or NOTE.body
-                        R->>D: update MESSAGE(status=processed)
-                        R-->>T: best-effort original text reply
-                    else search / recent / count
-                        R->>D: read active NOTE rows where deleted_at IS NULL
-                        R->>D: set last_list_results or last_search_results
-                        R->>D: update MESSAGE(status=processed)
-                        R-->>T: best-effort plain text answer
-                    else correction
-                        R->>D: resolve explicit number, selected note, list/search match, artifact, image note
-                        R->>R: parse replace or delete-phrase correction
-                        R->>D: insert NOTE_REVISION
-                        R->>D: update NOTE title/summary/body and IMAGE_FILE ocr/summary
-                        R->>D: set last_artifact_note_id and last_selected_note_id
-                        R->>D: update MESSAGE(status=processed)
-                        R-->>T: best-effort before/after reply
-                    else delete request
-                        R->>D: resolve selected/list/search/artifact target
-                        R->>D: set pending_delete_note_id
-                        R->>D: update MESSAGE(status=processed)
-                        R-->>T: best-effort delete confirmation
-                    else delete confirm
-                        R->>D: read pending_delete_note_id
-                        alt no pending
-                            R->>D: update MESSAGE(status=processed)
-                        else already deleted
-                            R->>D: clear pending_delete_note_id
-                            R->>D: update MESSAGE(status=processed)
-                        else active note
-                            R->>D: soft delete NOTE(deleted_at, deleted_reason)
-                            R->>D: clear pending_delete_note_id
-                            R->>D: update MESSAGE(status=processed)
-                        end
-                        R-->>T: best-effort delete status
+        par Background processing
+            alt Text command gate hit
+                R->>D: Load CONVERSATION_STATE
+                alt Slash command
+                    R->>R: Pin command intent
+                    R->>D: Resolve note target and page state
+                    alt Existing-note mutation
+                        R->>D: Save pending_action preview
+                    else List or show
+                        R->>D: Save page_state and result ids
+                    else New note
+                        R->>M: Analyze note text
+                        M-->>R: Title, summary, tags
+                        R->>D: Create NOTE
                     end
-                    alt result send fails
-                        R->>D: update MESSAGE(status=reply_failed)
-                        R->>R: logger.warning
-                    end
-                else AI router after command miss
-                    R->>R: safety net blocks meta commands from create or append
-                    R->>R: strip explicit save prefixes from note content
-                    R->>D: read same-chat messages from last 30 min
-                    R->>M: route_text(prepared text + context + tags + candidates)
-                    M-->>R: route JSON
-                    alt tool / fallback query
-                        R->>D: read active notes, tags, or merge candidates
-                        R->>D: update MESSAGE(status=processed)
-                        R-->>T: best-effort plain text answer
-                    else note save
-                        R->>D: insert AI_ANALYSIS
-                        R->>D: create NOTE or append existing NOTE with prepared text
-                        R->>D: update CONVERSATION_STATE(last_artifact_note_id)
-                        R->>D: update MESSAGE(status=processed)
-                        R-->>T: best-effort save summary
-                    else ignore
-                        R->>D: update MESSAGE(status=processed)
-                        R-->>T: best-effort not-saved reply
-                    end
-                    alt result send fails
-                        R->>D: update MESSAGE(status=reply_failed)
-                    end
+                else Read, search, recent, count
+                    R->>D: Read active NOTE rows
+                    R->>D: Save list/search result ids
+                else Numbered reference
+                    R->>D: Resolve last_list_results, then last_search_results
+                    R->>D: Save last_selected_note_id
+                else Correction
+                    R->>D: Insert NOTE_REVISION
+                    R->>D: Update NOTE body and linked IMAGE_FILE OCR text
+                else Delete
+                    R->>D: Save pending_delete_note_id
+                    Note over R,D: Confirmation soft-deletes the NOTE
                 end
-            else photo flow
-                R->>D: insert IMAGE_FILE
-                R->>M: OCR + classify image
-                R->>D: update IMAGE_FILE(ocr_text, summary, image_type, confidence)
-                alt existing NOTE for same message/image
-                    R->>D: read existing NOTE
-                    R->>D: set last_image_note_id
-                    R-->>T: best-effort already-saved reply
-                else note image
-                    R->>D: insert NOTE
-                    R->>D: set last_artifact_note_id and last_image_note_id
-                    R->>D: update MESSAGE(status=processed)
-                    R-->>T: best-effort OCR text + summary + correction example
-                else unclear image
-                    R->>D: update MESSAGE(status=needs_review)
-                    R-->>T: best-effort clarification request
-                else general photo
-                    R->>D: update MESSAGE(status=processed)
-                    R-->>T: best-effort general photo reply
+                R->>D: Mark MESSAGE processed
+                R->>T: Best-effort result reply
+            else Command gate miss
+                R->>R: Reject meta commands from note persistence
+                R->>R: Strip explicit save prefix; set force-create flag
+                R->>D: Load 30-minute chat context and candidates
+                R->>M: Route and analyze text
+                M-->>R: create, append, ignore, or tool
+                R->>R: Explicit save stays create even if AI route is ignore
+                R->>D: Persist NOTE or execute read-only tool
+                R->>T: Best-effort result reply
+            else Photo flow
+                R->>D: Insert IMAGE_FILE
+                R->>M: OCR and image classification
+                M-->>R: OCR text, summary, type, confidence
+                R->>D: Update IMAGE_FILE
+                alt NOTE already linked to this image
+                    R->>D: Reuse existing NOTE and update reference state
+                else Image is a note
+                    R->>D: Create NOTE and save last_image_note_id
+                else Unclear image
+                    R->>D: Mark MESSAGE needs_review
                 end
-                alt result send fails
-                    R->>D: update MESSAGE(status=reply_failed)
-                end
+                R->>T: Best-effort image result reply
             end
+        end
+
+        alt Result reply delivery fails
+            R->>D: Set MESSAGE.status=reply_failed
+            R->>R: Log warning; do not roll back action
         end
     end

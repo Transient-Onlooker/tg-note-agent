@@ -1,80 +1,70 @@
 flowchart TD
-    In["Telegram message / photo / document"] --> Store["Store MESSAGE immediately"]
-    Store --> Ack["Best-effort immediate ack"]
-    Ack --> AckFail{"Ack send failed?"}
-    AckFail -->|Yes| AckWarn["logger.warning<br/>webhook still returns 200"]
-    AckFail -->|No| Accepted["Accepted"]
-    AckWarn --> Accepted
+    Input["Telegram text, photo, or document"] --> Store["Store MESSAGE immediately"]
+    Store --> Ack["Best-effort immediate ACK"]
+    Ack --> AckResult{"ACK delivered?"}
+    AckResult -->|No| AckLog["Log warning<br/>return webhook 200"]
+    AckResult -->|Yes| Accepted["Webhook accepted"]
+    AckLog --> Accepted
 
     Store --> State["Load CONVERSATION_STATE"]
-    State --> Gate{"Deterministic command gate first"}
+    State --> Gate{"Deterministic command gate"}
 
-    Gate -->|Slash command| Slash["Pin intent by command<br/>resolve flexible argument"]
-    Gate -->|Natural command request| NLRouter["Natural-language router<br/>map text to internal command"]
-    NLRouter --> Slash
-    Slash -->|/new| NewNote["Create new NOTE<br/>AI title / summary / tags"]
-    Slash -->|/add /fix /delete /dedupe| Approval["Store pending_action<br/>preview + approval required"]
-    Slash -->|/list /show over 10| Page["Paginated reply<br/>page_state + /next /prev"]
-    Gate -->|Numbered reference| Numbered["Resolve from last_list_results<br/>then last_search_results<br/>set last_selected_note_id"]
-    Gate -->|Read original| ReadLast["DB-only lookup<br/>NOTE.body or IMAGE_FILE.ocr_text"]
-    Gate -->|Search / Recent / Count| ReadTools["DB-only active NOTE reads<br/>save list/search result state"]
-    Gate -->|Correction| Correct["Resolve target<br/>parse replace/delete phrase<br/>update NOTE title/summary/body<br/>and IMAGE_FILE ocr/summary"]
-    Gate -->|Delete request| DeleteAsk["Store pending_delete_note_id"]
-    Gate -->|Delete confirm| DeleteExec["Idempotent soft delete<br/>deleted_at + deleted_reason"]
-    Gate -->|No command| MetaGuard{"Meta-command safety net"}
+    Gate -->|Slash command| Slash["Pin command intent"]
+    Gate -->|Natural command| Command["read, search, recent, count<br/>correction, delete, numbered reference"]
+    Slash --> Resolve["Resolve target and arguments<br/>with DB search or bounded AI helper"]
+    Command --> Resolve
 
-    MetaGuard -->|Meta command| NoSave["Do not create or append NOTE"]
-    MetaGuard -->|Normal content| Prep["Strip explicit save prefixes"]
-    Prep --> Context["Load same-chat context<br/>last 30 minutes only"]
-    Context --> AIRouter["AI route_text(prepared text)"]
+    Resolve -->|List or search| List["Read active notes<br/>save result ids and page state"]
+    Resolve -->|Numbered reference| Select["Resolve current result set<br/>save selected note"]
+    Resolve -->|Read original| Read["Return NOTE body or IMAGE_FILE OCR text"]
+    Resolve -->|Correction| Correct["Insert NOTE_REVISION<br/>sync NOTE body and IMAGE_FILE OCR text"]
+    Resolve -->|Delete request| DeleteAsk["Save pending delete target"]
+    DeleteAsk --> DeleteConfirm{"User confirms?"}
+    DeleteConfirm -->|Yes| SoftDelete["Soft delete NOTE<br/>set deleted_at and reason"]
+    DeleteConfirm -->|No| Cancel["Clear pending state"]
+    Resolve -->|Existing-note mutation| Preview["Save pending_action preview"]
+    Resolve -->|New note| Create["Create NOTE"]
 
-    AIRouter -->|Create| Create["Create NOTE + AI_ANALYSIS<br/>using prepared text"]
-    AIRouter -->|Append| Append["Append prepared text<br/>to existing NOTE"]
-    AIRouter -->|Ignore| Ignore["Mark processed; no NOTE"]
-    AIRouter -->|Tool| Tool["Tags / merge / fallback read tools"]
+    Gate -->|No command| Meta{"Meta command?"}
+    Meta -->|Yes| NoSave["Do not create or append"]
+    Meta -->|No| Prep["Strip explicit save prefix<br/>explicit save forces create<br/>load context and candidates"]
+    Prep --> Agent["AI router and tools"]
+    Agent --> AgentAction{"AI action"}
+    AgentAction -->|Create, append, or explicit save| Save["Persist NOTE and AI_ANALYSIS"]
+    AgentAction -->|Read-only tool| Tool["Query active notes, tags, merge candidates"]
+    AgentAction -->|Ignore without explicit save| Ignore["Mark MESSAGE processed"]
 
-    In -->|Photo| Photo["Store IMAGE_FILE"]
-    Photo --> Vision["OCR + classify"]
-    Vision --> ImageUpdate["Update IMAGE_FILE<br/>ocr_text / summary / image_type / confidence"]
-    ImageUpdate --> Existing{"Existing NOTE for message/image?"}
-    Existing -->|Yes| ExistingRef["Reuse NOTE<br/>set last_image_note_id"]
-    Existing -->|No note image| ImageNote["Create NOTE<br/>set last_artifact_note_id + last_image_note_id"]
-    Existing -->|Unclear| Review["MESSAGE.status=needs_review"]
-    Existing -->|General photo| PhotoOnly["Archive only"]
+    Input -->|Photo| Image["Archive IMAGE_FILE"]
+    Image --> Vision["Vision OCR and classification"]
+    Vision --> ImageData["Update OCR text, summary<br/>image type, confidence"]
+    ImageData --> Existing{"Existing NOTE for image?"}
+    Existing -->|Yes| Reuse["Reuse NOTE and save image reference"]
+    Existing -->|No, note image| ImageNote["Create NOTE and last_image_note_id"]
+    Existing -->|Unclear| Review["Mark needs_review and ask user"]
+    Existing -->|General photo| ArchiveOnly["Keep archive without NOTE"]
 
-    In -->|Document / PDF| Document["Store original file<br/>and document metadata"]
-    Document --> PageLoop["Process PDF page by page<br/>preserve page numbers"]
-    PageLoop --> TextCheck{"Enough embedded text<br/>on this page?"}
-    TextCheck -->|Yes| EmbeddedText["Keep parser text"]
-    TextCheck -->|No| RenderPage["Render page to image<br/>at OCR resolution"]
-    RenderPage --> PageOCR["Vision OCR<br/>using NIM_VISION_MODEL"]
-    EmbeddedText --> PageText["Store page text + source type"]
-    PageOCR --> PageText
-    PageText --> MorePages{"More selected pages?"}
-    MorePages -->|Yes| PageLoop
-    MorePages -->|No| MergeDoc["Merge in page order<br/>keep page boundaries"]
-    MergeDoc --> DocNote["Create NOTE<br/>AI title / summary / tags<br/>preserve file reference"]
+    Input -->|Document - planned| Document["Store file and page metadata"]
+    Document --> Pages["Embedded text first<br/>vision OCR fallback per page"]
+    Pages --> DocumentNote["Merge page text with boundaries<br/>create document NOTE"]
 
-    Numbered --> Reply["Best-effort result reply"]
-    NewNote --> Reply
-    Approval --> Reply
-    Page --> Reply
-    ReadLast --> Reply
-    ReadTools --> Reply
+    List --> Reply["Best-effort result reply"]
+    Select --> Reply
+    Read --> Reply
     Correct --> Reply
-    DeleteAsk --> Reply
-    DeleteExec --> Reply
-    NoSave --> Reply
+    SoftDelete --> Reply
+    Cancel --> Reply
+    Preview --> Reply
     Create --> Reply
-    Append --> Reply
-    Ignore --> Reply
+    NoSave --> Reply
+    Save --> Reply
     Tool --> Reply
-    ExistingRef --> Reply
+    Ignore --> Reply
+    Reuse --> Reply
     ImageNote --> Reply
     Review --> Reply
-    PhotoOnly --> Reply
-    DocNote --> Reply
+    ArchiveOnly --> Reply
+    DocumentNote --> Reply
 
-    Reply --> ReplyFail{"Result send failed?"}
-    ReplyFail -->|Yes| ReplyFailed["MESSAGE.status=reply_failed<br/>logger.warning"]
-    ReplyFail -->|No| Done["Keep action status"]
+    Reply --> ReplyResult{"Reply delivered?"}
+    ReplyResult -->|No| ReplyFailed["Set MESSAGE.status to reply_failed<br/>keep completed action"]
+    ReplyResult -->|Yes| Done["Done"]

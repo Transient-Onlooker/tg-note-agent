@@ -120,3 +120,38 @@ def test_slash_add_summary_rewrite_does_not_append_instruction(tmp_path: Path, m
     assert "요약 다시 써줘" not in note["body"]
     assert note["summary"] == "확률과 통계의 개념과 활용 사례를 간결하게 정리한 보고서 메모."
     assert "요약을 다시 썼어" in telegram.messages[-1]["text"]
+
+def test_natural_add_uses_preview_and_approval_without_llm(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    client, db, _telegram = build_client(tmp_path, FastPathForbiddenNIMProvider())
+    note_id = _insert_text_note(
+        db,
+        message_id="add-source-natural",
+        title="주간 계획",
+        summary="현재 주간 계획",
+        body="화요일에 계획을 정리한다.",
+    )
+    db.set_conversation_state(
+        chat_id="777",
+        sender_id="123",
+        key="last_list_results",
+        value={"note_ids": [note_id]},
+    )
+
+    response = _post_text(
+        client,
+        message_id=2107,
+        text="1번 메모에 수요일 회의 일정 추가해줘",
+    )
+
+    assert response.status_code == 200
+    assert "수요일 회의 일정" not in db.get_note_with_source(note_id)["body"]
+    pending = db.get_conversation_state(chat_id="777", sender_id="123", key="pending_action")
+    assert pending["type"] == "add"
+    assert pending["append_text"] == "수요일 회의 일정"
+
+    response = _post_text(client, message_id=2108, text="확인")
+
+    assert response.status_code == 200
+    assert "수요일 회의 일정" in db.get_note_with_source(note_id)["body"]
+    assert len(db.fetch_all("NOTE_REVISION")) == 1

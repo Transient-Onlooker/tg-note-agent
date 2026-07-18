@@ -3,59 +3,29 @@ gantt
     dateFormat  YYYY-MM-DD
     axisFormat  %m/%d
 
-    section v1 Core
-    Webhook ack + background flow       :done, v1a, 2026-07-03, 1d
-    Duplicate update handling           :done, v1b, 2026-07-03, 1d
-    Basic note save / ignore / append   :done, v1c, 2026-07-03, 1d
-    Best-effort Telegram outbound        :done, v1d, 2026-07-04, 1d
-    Explicit save prefix cleanup         :done, v1e, 2026-07-08, 1d
+    section Foundation
+    Webhook and dedupe baseline             :done, base1, 2026-07-03, 1d
+    Best-effort Telegram outbound policy    :done, base2, 2026-07-04, 1d
+    Command gate regression hardening       :done, base3, 2026-07-04, 1d
+    OCR correction and note/image sync      :done, base4, 2026-07-04, 1d
 
-    section v1.5 Query Tools
-    Note count / search / tag tools     :done, v15a, 2026-07-03, 1d
-    Telegram plain-text output polish   :done, v15b, 2026-07-03, 1d
-    Command gate regression hardening    :done, v15c, 2026-07-04, 1d
-    Numbered reference state             :done, v15d, 2026-07-04, 1d
-    Delete-phrase correction route       :done, v15e, 2026-07-08, 1d
+    section Current Command UX
+    Slash command parsing and bot menu      :done, cmd1, 2026-07-08, 1d
+    Numbered reference and page state       :done, cmd2, 2026-07-08, 1d
+    Approval previews for mutations         :active, cmd3, 2026-07-19, 2d
+    Natural-language command normalization  :active, cmd4, 2026-07-19, 2d
+    Explicit save recovery and NIM smoke test:done, cmd5, 2026-07-19, 1d
 
-    section v1.6 Slash Commands
-    Command grammar + docs               :active, v16a, 2026-07-08, 1d
-    Telegram setMyCommands               :v16b, after v16a, 1d
-    /new and /add separation             :v16c, after v16a, 1d
-    Pagination for list/show             :v16d, after v16b, 1d
-    Approval for add/fix/delete/dedupe   :v16e, after v16c, 1d
+    section Image and Documents
+    Photo archive and OCR classification    :done, img1, 2026-07-03, 2d
+    Low-confidence clarification loop       :active, img2, 2026-07-19, 2d
+    Local image and PDF test harness        :done, doc1, 2026-07-16, 1d
+    Telegram document intake                :doc2, after img2, 2d
+    Scanned-page rasterization and OCR      :doc3, after doc2, 2d
+    Page merge and document follow-ups      :doc4, after doc3, 2d
 
-    section v1.7 Natural Router
-    Natural language to internal commands:v17a, after v16e, 2d
-    Approval boundary stays deterministic:v17b, after v17a, 1d
-
-    section v2 Image Intake
-    Photo archive                       :done, v2a, 2026-07-03, 1d
-    OCR + note/photo classification     :done, v2b, 2026-07-03, 2d
-    OCR correction note/image sync       :done, v2c, 2026-07-04, 1d
-    Clarification loop for unclear image:active, v2d, 2026-07-04, 2d
-
-    section v2.1 Merge Workflow
-    Merge proposal schema + tool route  :done, v21a, 2026-07-03, 2d
-    Approve / cancel / soft delete flow :done, v21b, 2026-07-04, 1d
-    Merge-summary refinement            :active, v21c, 2026-07-05, 1d
-
-    section v2.2 Documents
-    Local image simulation               :done, v22a, 2026-07-16, 1d
-    PDF embedded-text test prototype     :done, v22b, 2026-07-16, 1d
-    Direct JPEG XObject vision OCR       :done, v22c, 2026-07-16, 1d
-    Remove blocked native renderers      :done, v22d, 2026-07-16, 1d
-    Telegram document intake             :v22e, after v22d, 1d
-    Full scanned-page rasterization      :v22f, after v22e, 2d
-    Page merge + long-document summary   :v22g, after v22f, 1d
-    Page-range and follow-up commands    :v22h, after v22g, 1d
-
-    section v2.5 Agent Expansion
-    More tools for dynamic routing      :active, v25a, after v22h, 2d
-    Multi-step agent loop               :v25b, after v25a, 2d
-    Notion-first sync strategy          :v25c, after v25b, 1d
-
-    section v2.6 Google Workspace
-    Workspace OAuth/token storage       :v26a, after v25c, 1d
-    Google Calendar tools               :v26b, after v26a, 2d
-    Google Chat integration             :v26c, after v26b, 1d
-    Approval for external mutations     :v26d, after v26b, 1d
+    section Agent Expansion
+    More DB-backed tools                    :agent1, after doc4, 2d
+    Bounded multi-step agent loop           :agent2, after agent1, 2d
+    Notion-first synchronization strategy   :agent3, after agent2, 1d
+    Google Workspace integrations           :agent4, after agent3, 3d

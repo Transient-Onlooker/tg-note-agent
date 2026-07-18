@@ -6,7 +6,7 @@ erDiagram
         string sender_id
         text raw_text
         string content_type
-        string status "received|processed|ai_failed|needs_review|action_failed|reply_failed"
+        string status "received, processed, ai_failed, needs_review, action_failed, reply_failed"
         datetime created_at
     }
 
@@ -43,19 +43,6 @@ erDiagram
         datetime created_at
     }
 
-    TAG {
-        string id PK
-        string name
-        string normalized_name
-        datetime created_at
-    }
-
-    NOTE_TAG {
-        string note_id PK
-        string tag_id PK
-        datetime created_at
-    }
-
     IMAGE_FILE {
         string id PK
         string message_id FK
@@ -73,11 +60,24 @@ erDiagram
         datetime created_at
     }
 
+    TAG {
+        string id PK
+        string name
+        string normalized_name
+        datetime created_at
+    }
+
+    NOTE_TAG {
+        string note_id PK, FK
+        string tag_id PK, FK
+        datetime created_at
+    }
+
     MERGE_PROPOSAL {
         string id PK
         string chat_id
-        string keep_note_id
-        string merge_note_id
+        string keep_note_id FK
+        string merge_note_id FK
         string reason
         string status
         datetime created_at
@@ -87,7 +87,7 @@ erDiagram
         string chat_id PK
         string sender_id PK
         string key PK
-        text value_json "last_list_results|last_search_results|page_state|pending_action|last_selected_note_id|last_image_note_id|pending_delete_note_id"
+        text value_json "result ids, page state, selection, pending actions"
         datetime updated_at
     }
 
@@ -103,7 +103,8 @@ erDiagram
     MESSAGE ||--o| NOTE : creates_or_updates
     MESSAGE ||--o{ AI_ANALYSIS : analyzed_by
     MESSAGE ||--o{ IMAGE_FILE : archives
-    NOTE ||--o{ NOTE_TAG : has
-    TAG ||--o{ NOTE_TAG : labels
-    NOTE ||--o{ MERGE_PROPOSAL : merge_target
     NOTE ||--o{ NOTE_REVISION : revises
+    NOTE ||--o{ NOTE_TAG : labels
+    TAG ||--o{ NOTE_TAG : belongs_to
+    NOTE ||--o{ MERGE_PROPOSAL : keep_target
+    NOTE ||--o{ MERGE_PROPOSAL : merge_target
