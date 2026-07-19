@@ -57,16 +57,43 @@ sequenceDiagram
                 end
                 R->>D: Mark MESSAGE processed
                 R->>T: Best-effort result reply
+            else Explicit split request
+                R->>R: Parse list items without changing raw text
+                R->>D: Save pending_action batch_split preview
+                R->>T: Ask for approval
+                Note over R,D: Approval makes one NOTE per item; cancellation makes none
             else Command gate miss
-                R->>R: Reject meta commands from note persistence
-                R->>R: Strip explicit save prefix; set force-create flag
-                R->>D: Load 30-minute chat context and candidates
-                R->>M: Route and analyze text
-                M-->>R: create, append, ignore, or tool
-                R->>R: Explicit save stays create even if AI route is ignore
-                R->>R: Sanitize generated title, summary, tags, and AI answer
-                Note over R: Raw NOTE body and OCR text remain unchanged
-                R->>D: Persist NOTE or execute read-only tool
+                R->>R: Detect deterministic technical note statement
+                alt Technical statement
+                    R->>D: Create NOTE with deterministic metadata
+                else Non-technical input
+                    R->>R: Reject meta commands from note persistence
+                    R->>R: Strip explicit save prefix; set force-create flag
+                    R->>R: Conservatively detect multi-line list structure
+                    R->>D: Load 30-minute context, search candidates, and last artifact
+                    R->>M: Route text with bounded output
+                    M-->>R: JSON in content or reasoning output
+                    R->>R: Recover structured route and validate append target
+                    R->>R: Normalize task to create, question to agent, continuation to append
+                    Note over R,M: NIM failure uses the same heuristic route safety rules
+                    R->>R: Explicit save stays create even if AI route is ignore
+                    alt Create or append
+                        R->>M: Analyze note metadata
+                        M-->>R: Korean title, summary, tags
+                        R->>R: Remove Han and demote past narrative time prefixes
+                        Note over R: Raw NOTE body and OCR text remain unchanged
+                        R->>D: Persist NOTE and AI_ANALYSIS
+                        opt Multi-line list detected
+                            R->>D: Replace NOTE_LIST_ITEM rows transactionally
+                            Note over R,D: append, correction, and merge re-sync items
+                        end
+                    else General question or read-only tool
+                        R->>D: Query active notes when needed
+                        R->>M: Run agent fallback when needed
+                    else Ignore
+                        R->>D: Mark MESSAGE processed without NOTE
+                    end
+                end
                 R->>T: Best-effort result reply
             else Photo flow
                 R->>D: Insert IMAGE_FILE

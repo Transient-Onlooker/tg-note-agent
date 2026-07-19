@@ -150,6 +150,19 @@ class Database:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(note_id) REFERENCES NOTE(id)
                 );
+                CREATE TABLE IF NOT EXISTS NOTE_LIST_ITEM (
+                    id TEXT PRIMARY KEY,
+                    note_id TEXT NOT NULL,
+                    section_label TEXT,
+                    body TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    is_completed INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(note_id) REFERENCES NOTE(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS IDX_NOTE_LIST_ITEM_NOTE_POSITION
+                ON NOTE_LIST_ITEM(note_id, position);
                 """
             )
             self._ensure_note_column(conn, "notion_page_id", "TEXT")
@@ -978,6 +991,58 @@ class Database:
             )
             conn.commit()
         return revision_id
+
+    def replace_note_list_items(
+        self,
+        *,
+        note_id: str,
+        items: list[dict[str, Any]],
+    ) -> None:
+        with self.connection() as conn:
+            conn.execute("DELETE FROM NOTE_LIST_ITEM WHERE note_id = ?", (note_id,))
+            created_at = utcnow_iso()
+            conn.executemany(
+                """
+                INSERT INTO NOTE_LIST_ITEM (
+                    id,
+                    note_id,
+                    section_label,
+                    body,
+                    position,
+                    is_completed,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(uuid.uuid4()),
+                        note_id,
+                        item.get("section_label"),
+                        str(item.get("body") or "").strip(),
+                        int(item.get("position") or index),
+                        1 if item.get("is_completed") else 0,
+                        created_at,
+                    )
+                    for index, item in enumerate(items, start=1)
+                    if str(item.get("body") or "").strip()
+                ],
+            )
+            conn.commit()
+
+    def get_note_list_items(self, note_id: str) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT NOTE_LIST_ITEM.*
+                FROM NOTE_LIST_ITEM
+                JOIN NOTE ON NOTE.id = NOTE_LIST_ITEM.note_id
+                WHERE NOTE_LIST_ITEM.note_id = ?
+                  AND NOTE.deleted_at IS NULL
+                ORDER BY NOTE_LIST_ITEM.position ASC
+                """,
+                (note_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def replace_note_body(
         self,

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from app.integrations.notion import NotionClient
 from app.models.db import Database, StoredMessage
 from app.models.schemas import TextAnalysisResult
+from app.services.list_capture import parse_note_list_items
 
 logger = logging.getLogger(__name__)
 
@@ -223,11 +224,14 @@ class NoteManager:
         new_body: str,
         reason: str | None = None,
     ) -> dict | None:
-        return self.db.replace_note_body(
+        updated_note = self.db.replace_note_body(
             note_id=note_id,
             new_body=new_body,
             reason=reason,
         )
+        if updated_note is not None:
+            self._sync_note_list_items(note_id, new_body)
+        return updated_note
 
     def replace_note_text_fields(
         self,
@@ -238,16 +242,25 @@ class NoteManager:
         new_body: str,
         reason: str | None = None,
     ) -> dict | None:
-        return self.db.replace_note_text_fields(
+        updated_note = self.db.replace_note_text_fields(
             note_id=note_id,
             new_title=new_title,
             new_summary=new_summary,
             new_body=new_body,
             reason=reason,
         )
+        if updated_note is not None:
+            self._sync_note_list_items(note_id, new_body)
+        return updated_note
 
     def delete_note(self, note_id: str, *, reason: str | None = None) -> None:
         self.db.delete_note(note_id, reason=reason)
+
+    def get_note_list_items(self, note_id: str) -> list[dict]:
+        return self.db.get_note_list_items(note_id)
+
+    def sync_note_list_items(self, note_id: str, body: str) -> list[dict]:
+        return self._sync_note_list_items(note_id, body)
 
     def store_analysis_and_note(
         self,
@@ -283,6 +296,8 @@ class NoteManager:
                 note_id = self.db.insert_note(message_id, analysis, source_text)
         else:
             note_id = self.db.insert_note(message_id, analysis, source_text)
+        self._sync_note_list_items(note_id, export_body)
+
         notion_page_id: str | None = None
         notion_status = "disabled"
 
@@ -368,8 +383,14 @@ class NoteManager:
             tags=merged_tags,
             confidence=confidence,
         )
+        self._sync_note_list_items(keep_note_id, merged_body)
         self.db.delete_note(merge_note_id)
         return self.db.get_note(keep_note_id) or keep_note
+
+    def _sync_note_list_items(self, note_id: str, body: str) -> list[dict]:
+        items = [item.to_record() for item in parse_note_list_items(body)]
+        self.db.replace_note_list_items(note_id=note_id, items=items)
+        return items
 
     @staticmethod
     def _append_note_body(existing_body: str, new_text: str) -> str:

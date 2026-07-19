@@ -4,7 +4,7 @@ Base date: `2026-07-03`
 
 This is a short working roadmap for the current Telegram-first note agent.
 
-Current stabilization status: webhook outbound messaging is best-effort, command gate runs before AI save routing, explicit save prefixes are stripped before note persistence, numbered references are backed by conversation state, text/image corrections update the stored note fields, and regression tests cover those paths.
+Current stabilization status: webhook outbound messaging is best-effort, command gate runs before AI save routing, explicit save prefixes are stripped before note persistence, numbered references are backed by conversation state, text/image corrections update the stored note fields, and multi-line notes preserve their raw body while synchronizing NOTE_LIST_ITEM rows. Regression tests cover those paths.
 
 Command UX direction: slash commands should pin intent while leaving arguments flexible. `/new` creates a new note, `/add` appends to an existing note, and existing-note mutations such as `/add`, `/fix`, `/delete`, and `/dedupe` require an approval step. After the slash-command prototype is stable, a natural-language router should map ordinary Korean requests into the same internal command actions without requiring `/`. See `docs/COMMANDS.md`.
 
@@ -76,6 +76,7 @@ gantt
     /new and /add separation        :v16c, after v16a, 1d
     Pagination for list/show        :v16d, after v16b, 1d
     Approval for add/fix/delete     :v16e, after v16c, 1d
+    Batch-list capture + split preview:done, v16f, 2026-07-19, 1d
 
     section v1.7 Natural Router
     Natural language command routing:v17a, after v16e, 2d

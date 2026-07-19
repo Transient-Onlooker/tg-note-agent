@@ -25,19 +25,26 @@ flowchart TD
     Resolve -->|Existing-note mutation| Preview["Save pending_action preview"]
     Resolve -->|New note| Create["Create NOTE"]
 
-    Gate -->|No command| Meta{"Meta command?"}
+    Gate -->|No command| Technical{"Technical note statement?"}
+    Technical -->|Yes| TechSave["Deterministic metadata<br/>create without router model"]
+    Technical -->|No| Meta{"Meta command?"}
     Meta -->|Yes| NoSave["Do not create or append"]
-    Meta -->|No| Prep["Strip explicit save prefix<br/>explicit save forces create<br/>load context and candidates"]
-    Prep --> Batch{"Multi-line list capture? - planned"}
+    Meta -->|No| Prep["Strip explicit save prefix<br/>explicit save forces create<br/>load context, search candidates, and last artifact"]
+    Prep --> Batch{"Conservative multi-line list capture?"}
     Batch -->|No| Agent["AI router and tools"]
     Batch -->|Yes| Structure["Preserve raw body in one NOTE<br/>detect sections and checklist items"]
     Structure --> Split{"Explicitly asks to split<br/>into separate notes?"}
     Split -->|No or ambiguous| ListNote["Create one list NOTE<br/>save item metadata for future tools"]
-    Split -->|Yes| SplitNotes["Create or propose notes<br/>per section"]
-    Agent --> AgentAction{"AI action"}
-    AgentAction -->|Create, append, or explicit save| Metadata["Validate generated metadata<br/>remove Han ideographs<br/>keep actionable schedule times only"]
+    Split -->|Yes| SplitPreview["Save pending_action preview"]
+    SplitPreview --> SplitConfirm{"User approves?"}
+    SplitConfirm -->|Yes| SplitNotes["Create one NOTE per item<br/>using one bounded metadata call"]
+    SplitConfirm -->|No| CancelSplit["Create no NOTE; keep raw MESSAGE"]
+    Agent --> Parse["Recover structured JSON<br/>from content or reasoning output"]
+    Parse --> AgentAction{"Validate and normalize action<br/>task-like statement to create<br/>general question to agent fallback<br/>single recent continuation to append"}
+    AgentAction -->|Create, append, or explicit save| Metadata["Validate generated metadata<br/>remove Han ideographs<br/>demote past narrative time prefixes"]
     Metadata --> Save["Persist NOTE and AI_ANALYSIS<br/>raw body unchanged"]
-    AgentAction -->|Read-only tool| Tool["Query active notes, tags, merge candidates"]
+    TechSave --> Save
+    AgentAction -->|Read-only tool or general question| Tool["Query active notes or run agent fallback"]
     AgentAction -->|Ignore without explicit save| Ignore["Mark MESSAGE processed"]
 
     Input -->|Photo| Image["Archive IMAGE_FILE"]
@@ -67,6 +74,7 @@ flowchart TD
     Tool --> Reply
     ListNote --> Reply
     SplitNotes --> Reply
+    CancelSplit --> Reply
     Ignore --> Reply
     Reuse --> Reply
     ImageNote --> Reply

@@ -20,6 +20,7 @@ from app.models.schemas import (
     remove_han_ideographs,
 )
 from app.services.image_archive import ImageArchive
+from app.services.list_capture import extract_explicit_batch_split, parse_note_list_items
 from app.services.nim_provider import NIMProviderError, NvidiaNIMProvider
 from app.services.note_manager import NoteManager
 
@@ -52,37 +53,6 @@ NOTE_COUNT_HINTS = (
     "총 몇",
 )
 
-"""
-FAST_READ_REFERENCE_HINTS = (
-    "저 메모",
-    "이 메모",
-    "그 메모",
-    "방금 메모",
-    "방금 저장",
-    "방금 시킨",
-    "아까 메모",
-    "아까 사진",
-    "저 사진",
-    "이 사진",
-    "그 사진",
-    "사진 메모",
-    "ocr",
-    "그거",
-)
-FAST_READ_CONTENT_HINTS = (
-    "전체 내용",
-    "전체 메모",
-    "원문",
-    "뭐라고 저장",
-    "어떻게 저장",
-    "요약 말고",
-    "풀어서",
-    "전문",
-    "본문",
-)
-
-
-"""
 FAST_READ_REFERENCE_HINTS = (
     "\uc800 \uba54\ubaa8",
     "\uc774 \uba54\ubaa8",
@@ -90,8 +60,12 @@ FAST_READ_REFERENCE_HINTS = (
     "\ubc29\uae08 \uba54\ubaa8",
     "\ubc29\uae08 \uc800\uc7a5",
     "\ubc29\uae08 \uc2dc\ud0a8",
+    "\ubc29\uae08 \uac70",
+    "\ubc29\uae08 \uac83",
     "\uc544\uae4c \uba54\ubaa8",
     "\uc544\uae4c \uc0ac\uc9c4",
+    "\uc544\uae4c \uac70",
+    "\uc544\uae4c \uac83",
     "\uc800 \uc0ac\uc9c4",
     "\uc774 \uc0ac\uc9c4",
     "\uadf8 \uc0ac\uc9c4",
@@ -152,8 +126,11 @@ CORRECTION_HINTS = (
 )
 SEARCH_VERBS = (
     "\uc54c\ub824\uc918",
+    "\uc54c\ub824\uc904\ub798",
     "\ubcf4\uc5ec\uc918",
+    "\ubcf4\uc5ec\uc904\ub798",
     "\ucc3e\uc544\uc918",
+    "\ucc3e\uc544\uc904\ub798",
     "\uac80\uc0c9",
     "\ubb50 \uc788",
     "\ubb50\uc788",
@@ -601,7 +578,18 @@ class UpdateRouter:
         reply_token = _CURRENT_REPLY_MESSAGE_ID.set(message_id)
         try:
             resolved_sender_id = self._resolve_sender_id(message_id, sender_id)
+            split_body = extract_explicit_batch_split(text)
+            if split_body is not None:
+                self._handle_batch_split_request(
+                    message_id=message_id,
+                    chat_id=chat_id,
+                    sender_id=resolved_sender_id,
+                    body=split_body,
+                )
+                return
+
             explicit_save = self._has_explicit_note_save_request(text)
+            batch_items = parse_note_list_items(self._prepare_text_for_note_save(text))
             if self._looks_like_pending_rejection(text) and self._has_pending_confirmation(
                 chat_id=str(chat_id),
                 sender_id=resolved_sender_id,
@@ -692,6 +680,12 @@ class UpdateRouter:
             )
             existing_tags = self.note_manager.list_tags()
             candidate_notes = self.note_manager.search_notes(prepared_text, limit=5)
+            candidate_notes = self._include_last_artifact_candidate(
+                chat_id=str(chat_id),
+                sender_id=resolved_sender_id,
+                candidate_notes=candidate_notes,
+                limit=5,
+            )
             conversation_context = self.note_manager.recent_chat_messages(
                 str(chat_id),
                 limit=8,
@@ -711,9 +705,9 @@ class UpdateRouter:
                 route.reason,
             )
 
-            effective_route = "create" if explicit_save else route.route
+            effective_route = "create" if explicit_save or batch_items else route.route
 
-            if route.tool_name and not explicit_save:
+            if route.tool_name and not explicit_save and not batch_items:
                 self._execute_tool_request(
                     message_id=message_id,
                     chat_id=chat_id,
@@ -771,7 +765,7 @@ class UpdateRouter:
                 return
 
             existing_note_id = None
-            action = "append" if effective_route == "append" else "create"
+            action = "append" if effective_route == "append" and not batch_items else "create"
             if action == "append" and route.target_note_id:
                 existing_note = self.note_manager.get_note(route.target_note_id)
                 if existing_note is not None:
@@ -786,13 +780,15 @@ class UpdateRouter:
                     action=action,
                     target_note_id=existing_note_id,
                 )
-                if explicit_save and (analysis.is_note is False or analysis.action == "ignore"):
+                if (explicit_save or batch_items) and (
+                    analysis.is_note is False or analysis.action == "ignore"
+                ):
                     analysis = self._build_explicit_save_fallback_analysis(
                         prepared_text,
                         action=action,
                         target_note_id=existing_note_id,
                     )
-                elif explicit_save:
+                elif explicit_save or batch_items:
                     analysis = self._normalize_explicit_save_analysis(analysis, prepared_text)
             except NIMProviderError:
                 logger.exception(
@@ -824,6 +820,7 @@ class UpdateRouter:
                 analysis.summary,
                 saved_note.action,
                 saved_note.notion_status,
+                list_item_count=len(self.note_manager.get_note_list_items(saved_note.note_id)),
             )
             self._send_result_message(message_id, chat_id, response_text, purpose="text_completion")
             logger.info("Sent text completion message chat_id=%s db_message_id=%s", chat_id, message_id)
@@ -1148,6 +1145,159 @@ class UpdateRouter:
             return True
         return False
 
+    def _handle_batch_split_request(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        body: str,
+    ) -> bool:
+        items = parse_note_list_items(body)
+        if len(items) < 2:
+            self.note_manager.mark_processed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "나눠 저장할 항목을 충분히 찾지 못했어. 각 항목을 줄바꿈이나 글머리표로 보내줘.",
+                purpose="batch_split_missing_items",
+            )
+            return True
+
+        pending = {
+            "type": "batch_split",
+            "source_message_id": message_id,
+            "original_body": body,
+            "items": [item.to_record() for item in items],
+        }
+        self.note_manager.set_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="pending_action",
+            value=pending,
+        )
+        self.note_manager.mark_processed(message_id)
+        self._send_result_message(
+            message_id,
+            chat_id,
+            self._build_batch_split_preview_message(items),
+            purpose="batch_split_preview",
+        )
+        return True
+
+    def _apply_pending_batch_split(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        pending: dict,
+    ) -> bool:
+        items = [
+            item
+            for item in pending.get("items") or []
+            if isinstance(item, dict) and str(item.get("body") or "").strip()
+        ]
+        source_message_id = str(pending.get("source_message_id") or message_id)
+        original_body = str(pending.get("original_body") or "").strip()
+        if len(items) < 2:
+            self.note_manager.clear_conversation_state(
+                chat_id=str(chat_id),
+                sender_id=sender_id,
+                key="pending_action",
+            )
+            self.note_manager.mark_action_failed(message_id)
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "나눠 저장할 항목 정보가 없어. 원문을 다시 보내줘.",
+                purpose="batch_split_invalid",
+            )
+            return True
+
+        try:
+            shared_analysis = self.nim_provider.analyze_text(
+                original_body,
+                existing_tags=self.note_manager.list_tags(),
+                action="create",
+                target_note_id=None,
+            )
+        except NIMProviderError:
+            logger.exception(
+                "Failed to generate batch metadata; using deterministic fallback db_message_id=%s",
+                message_id,
+            )
+            shared_analysis = TextAnalysisResult(
+                title="묶음 메모",
+                summary=original_body[:240],
+                tags=[],
+                category="note",
+                confidence=0.5,
+                raw_response='{"fallback": "batch_split"}',
+                is_note=True,
+                action="create",
+            )
+
+        note_ids: list[str] = []
+        for item in items:
+            item_body = str(item.get("body") or "").strip()
+            section_label = str(item.get("section_label") or "").strip()
+            title = item_body[:60].strip() or "묶음 메모"
+            if section_label and not title.startswith(section_label):
+                title = f"{section_label} - {title}"[:60]
+            item_analysis = TextAnalysisResult(
+                title=title,
+                summary=item_body,
+                tags=list(shared_analysis.tags),
+                category=shared_analysis.category or "note",
+                confidence=shared_analysis.confidence,
+                raw_response=shared_analysis.raw_response,
+                is_note=True,
+                action="create",
+            )
+            saved = self.note_manager.store_analysis_and_note(
+                message_id=source_message_id,
+                provider_name="nvidia_nim",
+                model_name=self.nim_provider.text_model,
+                source_text=item_body,
+                analysis=item_analysis,
+                existing_note_id=None,
+            )
+            note_ids.append(saved.note_id)
+
+        self.note_manager.clear_conversation_state(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            key="pending_action",
+        )
+        self.note_manager.mark_processed(message_id)
+        self._remember_list_results(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            note_ids=note_ids,
+        )
+        if note_ids:
+            self._remember_note_reference(
+                chat_id=str(chat_id),
+                sender_id=sender_id,
+                note_id=note_ids[-1],
+            )
+        self._send_result_message(
+            message_id,
+            chat_id,
+            f"각각 저장했어. 총 {len(note_ids)}개의 메모를 만들었어.",
+            purpose="batch_split_applied",
+        )
+        return True
+
+    @staticmethod
+    def _build_batch_split_preview_message(items) -> str:
+        lines = [f"이렇게 {len(items)}개의 메모로 나눠 저장할까?"]
+        for index, item in enumerate(items, start=1):
+            lines.append(f"{index}. {item.body}")
+        lines.extend(("", "'승인'이라고 보내면 저장하고, '취소'라고 보내면 취소할게."))
+        return "\n".join(lines)
+
     def _handle_slash_new_note(
         self,
         *,
@@ -1226,6 +1376,7 @@ class UpdateRouter:
                 analysis.summary,
                 saved_note.action,
                 saved_note.notion_status,
+                list_item_count=len(self.note_manager.get_note_list_items(saved_note.note_id)),
             ),
             purpose="slash_new_saved",
         )
@@ -1554,6 +1705,7 @@ class UpdateRouter:
             analysis.summary,
             saved_note.action,
             saved_note.notion_status,
+            list_item_count=len(self.note_manager.get_note_list_items(saved_note.note_id)),
         )
         self._send_result_message(
             message_id,
@@ -1684,6 +1836,13 @@ class UpdateRouter:
 
         action_type = str(pending.get("type") or "")
         if action_type not in {"fix", "add", "summary_rewrite"}:
+            if action_type == "batch_split":
+                return self._apply_pending_batch_split(
+                    message_id=message_id,
+                    chat_id=chat_id,
+                    sender_id=sender_id,
+                    pending=pending,
+                )
             if action_type == "dedupe":
                 return self._apply_pending_dedupe(
                     message_id=message_id,
@@ -2265,6 +2424,27 @@ class UpdateRouter:
             return []
         return [str(item) for item in raw_ids if item]
 
+    def _include_last_artifact_candidate(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        candidate_notes: list[dict],
+        limit: int,
+    ) -> list[dict]:
+        state = self.note_manager.get_conversation_state(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            key="last_artifact_note_id",
+        )
+        note_id = state.get("note_id") if isinstance(state, dict) else state
+        if not note_id or any(str(note.get("id")) == str(note_id) for note in candidate_notes):
+            return candidate_notes[:limit]
+        note = self.note_manager.get_note(str(note_id))
+        if note is None:
+            return candidate_notes[:limit]
+        return [note, *candidate_notes][:limit]
+
     def _remember_note_reference(self, *, chat_id: str, sender_id: str, note_id: str) -> None:
         self.note_manager.set_conversation_state(
             chat_id=chat_id,
@@ -2433,7 +2613,7 @@ class UpdateRouter:
         has_note = "\uba54\ubaa8" in normalized or "\ub178\ud2b8" in normalized
         has_read = any(hint in normalized for hint in FAST_READ_CONTENT_HINTS + SEARCH_VERBS)
         has_detail = any(hint in normalized for hint in NUMBERED_DETAIL_HINTS)
-        return has_detail or (has_note and has_read)
+        return has_detail or has_read
 
     @staticmethod
     def _looks_like_numbered_select_request(normalized: str) -> bool:
@@ -2462,7 +2642,11 @@ class UpdateRouter:
             return True
         if cls._extract_selection_index(normalized) is not None and "\uc218\uc815" in normalized:
             return True
-        if any(hint in normalized for hint in CORRECTION_HINTS):
+        if any(
+            hint in normalized
+            for hint in CORRECTION_HINTS
+            if hint != "수정"
+        ):
             return True
         if cls._extract_correction_intent(text) is not None:
             return True
@@ -2504,7 +2688,7 @@ class UpdateRouter:
 
     @staticmethod
     def _looks_like_search_request(normalized: str) -> bool:
-        if any(hint in normalized for hint in DELETE_HINTS + CORRECTION_HINTS):
+        if any(hint in normalized for hint in DELETE_HINTS):
             return False
         if "\ud0dc\uadf8" in normalized:
             return False
@@ -2612,6 +2796,19 @@ class UpdateRouter:
             or "\ubb50\uc9c0" in normalized
         ):
             return None
+        explicit_correction = any(
+            hint in normalized
+            for hint in CORRECTION_HINTS
+            if hint != "\uc218\uc815"
+        ) or "->" in text or "\u2192" in text
+        if not explicit_correction and (
+            normalized.rstrip(" .!?\uff1f").endswith("\ub2e4")
+            or re.search(
+                r"(?:\ud558\uae30|\uc0ac\uae30|\uac00\uae30|\uba39\uae30|\ub9c8\uc2dc\uae30|\uc77d\uae30|\ubcf4\uae30|\uc900\ube44|\ud655\uc778)$",
+                normalized.rstrip(" .!?\uff1f"),
+            )
+        ):
+            return None
         patterns = (
             r".*?\ub294\s+(?P<old>.+?)\s*(?:\uc774|\uac00)?\s*\uc544\ub2c8\ub77c\s+(?P<new>.+?)(?:\uc57c|\uc774\uc57c|\uc785\ub2c8\ub2e4)?(?:[.!?])?\s*(?:\uc218\uc815\ud574\uc918|\uc815\uc815\ud574\uc918|\uace0\uccd0\uc918|\ubc14\uafd4\uc918)?\s*$",
             r"(?P<old>.+?)(?:\uc774|\uac00)?\s*\uc544\ub2c8\ub77c[,\s]+(?P<new>.+?)(?:\uc57c|\uc774\uc57c|\uc785\ub2c8\ub2e4)?(?:[.!?])?\s*(?:\uc218\uc815\ud574\uc918|\uc815\uc815\ud574\uc918|\uace0\uccd0\uc918|\ubc14\uafd4\uc918)?\s*$",
@@ -2633,9 +2830,15 @@ class UpdateRouter:
                     old_text=old_text,
                     new_text=new_text,
                 )
-        if not any(hint in normalized for hint in CORRECTION_HINTS):
-            return None
-        return CommandIntent(name="correct_last_note")
+        explicit_hints = tuple(hint for hint in CORRECTION_HINTS if hint != "수정")
+        if any(hint in normalized for hint in explicit_hints):
+            return CommandIntent(name="correct_last_note")
+        if "수정" in normalized and (
+            cls._extract_selection_index(normalized) is not None
+            or any(reference in normalized for reference in FAST_READ_REFERENCE_HINTS)
+        ):
+            return CommandIntent(name="correct_last_note")
+        return None
 
     @staticmethod
     def _strip_correction_suffix(value: str) -> str:
@@ -2914,6 +3117,7 @@ class UpdateRouter:
         summary: str,
         action: str,
         notion_status: str = "disabled",
+        list_item_count: int = 0,
     ) -> str:
         prefix = (
             "\uae30\uc874 \uba54\ubaa8\uc5d0 \ub367\ubd99\uc600\uc5b4."
@@ -2925,6 +3129,8 @@ class UpdateRouter:
             message += "\n\nAI 요약 생성에 실패해서 원문만 저장했어."
         elif summary:
             message += f"\n\n\uc694\uc57d: {summary}"
+        if list_item_count:
+            message += f"\n\n묶음 메모로 인식한 항목: {list_item_count}개"
         if notion_status == "exported":
             message += "\nNotion: \uc800\uc7a5\ud568"
         elif notion_status == "failed":
@@ -4036,74 +4242,6 @@ class UpdateRouter:
             return cls._build_local_search_message(notes)
         return normalized
 
-    """
-    @staticmethod
-    def _build_image_saved_message(
-        *,
-        ocr_text: str | None,
-        summary: str,
-        notion_status: str,
-    ) -> str:
-        message = "?ъ쭊 硫붾え濡???ν뻽??"
-        if ocr_text:
-            message += f"\n\n?쎌? ?댁슜:\n{ocr_text}"
-        message += f"\n\n?붿빟: {summary}"
-        if notion_status == "exported":
-            message += "\nNotion: ??ν븿"
-        elif notion_status == "failed":
-            message += "\nNotion: ????ㅽ뙣"
-        return message
-
-    @classmethod
-    def _detect_fast_read_intent(cls, text: str | None) -> str | None:
-        if not text:
-            return None
-        normalized = cls._normalize_text(text)
-        has_reference = any(hint in normalized for hint in FAST_READ_REFERENCE_HINTS)
-        has_read_content = any(hint in normalized for hint in FAST_READ_CONTENT_HINTS)
-        has_read_verb = any(verb in normalized for verb in ("알려줘", "보여줘"))
-        if has_reference and (has_read_content or has_read_verb):
-            return "read_last_note"
-        return None
-
-    def _legacy_fast_read_last_note(self, *, message_id: str, chat_id: int | str) -> None:
-        note = self.note_manager.get_last_note_for_chat(
-            str(chat_id),
-            prefer_image=True,
-            within_minutes=30,
-        )
-        self.note_manager.mark_processed(message_id)
-
-        if note is None:
-            self.telegram_client.send_message(chat_id, "최근 30분 안에 저장한 메모를 찾지 못했어.")
-            logger.info("Fast read found no recent note db_message_id=%s", message_id)
-            return
-
-        body = str(note.get("image_ocr_text") or note.get("body") or note.get("summary") or "").strip()
-        title = str(note.get("title") or "").strip()
-        summary = str(note.get("summary") or "").strip()
-        source_content_type = str(note.get("source_content_type") or "").strip()
-
-        lines = [
-            "방금 OCR로 저장된 메모는 이렇게 저장돼 있어."
-            if source_content_type == "photo"
-            else "방금 저장된 메모는 이렇게 저장돼 있어."
-        ]
-        if title:
-            lines.extend(("", f"[제목]\n{title}"))
-        if body:
-            lines.extend(("", f"[본문]\n{body}"))
-        if summary:
-            lines.extend(("", f"[요약]\n{summary}"))
-
-        self.telegram_client.send_message(chat_id, "\n".join(lines))
-        logger.info(
-            "Served fast read for recent note db_message_id=%s source_content_type=%s",
-            message_id,
-            source_content_type or "unknown",
-        )
-
-    """
     @staticmethod
     def _build_image_saved_message(
         *,

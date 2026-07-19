@@ -12,29 +12,40 @@ flowchart LR
     Router --> Gate["Deterministic command gate"]
     Gate --> Slash["Slash commands<br/>/new /add /list /show /raw<br/>/fix /delete /dedupe /help"]
     Gate --> Natural["Natural commands<br/>read, search, list, count<br/>correction, delete, numbered reference"]
-    Gate --> State["CONVERSATION_STATE<br/>result ids, page state, selection<br/>bare number resolves current list first<br/>pending action, pending delete"]
+    Gate --> State["CONVERSATION_STATE<br/>result ids, page state, selection<br/>bare number resolves current list first<br/>pending action, delete, batch split"]
     Gate --> Revision["NOTE_REVISION<br/>correction audit"]
 
-    Router --> Prep["Prepare note text<br/>strip prefix; explicit save forces create"]
-    Prep --> Capture["Batch-list capture - planned<br/>preserve one raw NOTE; detect sections and items"]
+    Gate -->|miss| Technical{"Technical note statement?"}
+    Technical -->|Yes| TechNote["Deterministic note metadata<br/>create without router model"]
+    Technical -->|No| Prep["Prepare note text<br/>strip prefix; explicit save forces create<br/>load search candidates plus last artifact"]
+    Prep --> Capture["Conservative batch-list capture<br/>preserve raw body; detect sections and items"]
     Capture --> Split{"Explicitly request<br/>separate notes?"}
     Split -->|No or ambiguous| OneNote["Keep one NOTE<br/>with structured list metadata"]
-    Split -->|Yes| ManyNotes["Create or propose<br/>separate notes per section"]
-    Prep --> AI["NVIDIA NIM<br/>route, analyze, vision"]
+    Split -->|Yes| BatchPreview["Save pending_action preview"]
+    BatchPreview --> ManyNotes["Approval creates one NOTE per item<br/>cancellation creates none"]
+    Capture -->|Not a list| AI["NVIDIA NIM<br/>route, analyze, vision"]
+    AI --> RouteGuard["Route safety normalization<br/>recover content or reasoning JSON<br/>validate append target<br/>task to create; question to agent<br/>single continuation to append"]
+    OneNote --> Manager
+    ManyNotes --> Manager
     Router --> Archive["ImageArchive"]
     Archive --> FileAPI["Telegram file API"]
 
     Router --> Manager["NoteManager"]
     Manager --> DB[("SQLite")]
     Archive --> DB
-    AI --> MetadataGuard["Generated metadata guard<br/>remove Han ideographs<br/>preserve only actionable schedule times"]
+    TechNote --> Manager
+    RouteGuard -->|create or append| MetadataGuard["Generated metadata guard<br/>remove Han ideographs<br/>demote past narrative time prefixes"]
+    RouteGuard -->|tool or general question| AgentReply["DB tool or agent fallback"]
+    RouteGuard -->|ignore| NoNote["Mark MESSAGE processed without NOTE"]
     MetadataGuard --> Manager
+    AgentReply --> Reply
+    NoNote --> Reply
 
     DB --> Message["MESSAGE<br/>received, processed, reply_failed"]
     DB --> Note["NOTE<br/>soft delete fields"]
     DB --> Image["IMAGE_FILE<br/>OCR text and classification"]
     DB --> Tags["TAG and NOTE_TAG"]
-    DB --> Items["NOTE_LIST_ITEM - planned<br/>section, text, completion state"]
+    DB --> Items["NOTE_LIST_ITEM<br/>section, text, position, completion state"]
     DB --> Merge["MERGE_PROPOSAL"]
 
     Router --> Reply["Best-effort result reply"]

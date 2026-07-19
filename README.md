@@ -10,7 +10,8 @@ Telegram webhook based personal note agent.
 - Run deterministic command gate before AI routing for read/search/recent/count/correction/delete/numbered references
 - Support prototype slash commands for clear intent: `/new`, `/add`, `/list`, `/show`, `/raw`, `/fix`, `/delete`, `/dedupe`, `/next`, `/prev`, `/page`, and `/help`
 - Require preview/approval before mutating or deleting existing notes
-- Save `NOTE`, `AI_ANALYSIS`, `IMAGE_FILE`, `CONVERSATION_STATE`, and `NOTE_REVISION`
+- Save `NOTE`, `NOTE_LIST_ITEM`, `AI_ANALYSIS`, `IMAGE_FILE`, `CONVERSATION_STATE`, and `NOTE_REVISION`
+- Preserve multi-line raw notes while extracting structured list items; explicit split requests require preview and approval
 - Sync OCR correction into both `NOTE.body` and `IMAGE_FILE.ocr_text`
 - Use NVIDIA NIM only after command-gate miss for save/append/tool/fallback workflows
 

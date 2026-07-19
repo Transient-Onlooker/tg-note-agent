@@ -10,8 +10,11 @@ This document reflects the current hybrid implementation:
 - Existing-note mutations require approval: `/add`, `/fix`, `/delete`, and `/dedupe` must show a preview or target list before execution.
 - Broad list/show results should paginate at 10 items per page and keep page state in `CONVERSATION_STATE`.
 - AI routing is used only after command-gate miss, with a safety net preventing meta commands from becoming NOTE create/append.
+- Router JSON is recovered from either content or reasoning output, append targets are validated, and the latest artifact is included as a bounded candidate.
+- Task-like statements default to create, single-candidate continuations can append, and general questions use agent fallback instead of becoming notes.
+- Declarative choice sentences such as past-tense `A 말고 B를 했다` are not treated as corrections; explicit or compact replacement forms remain commands.
 - Explicit save prefixes are removed before analysis; an explicit save forces NOTE persistence even if AI routing says ignore.
-- Planned batch-list capture preserves a multi-line message as one raw NOTE and extracts sections/items; it only splits into separate notes after an explicit user request.
+- Batch-list capture preserves a multi-line message as one raw NOTE and synchronizes NOTE_LIST_ITEM rows; explicit split requests require preview and approval before creating one NOTE per item.
 - Bare numeric slash arguments such as `/delete 5` resolve item 5 from `last_list_results` before any previously selected note.
 - AI-generated titles, summaries, tags, search answers, and agent answers remove Han ideographs; raw NOTE bodies and OCR text remain unchanged.
 - Temporal metadata is promoted only for clear plans, appointments, tasks, or deadlines, not past narrative context such as `3시까지 기다렸다`.
@@ -37,29 +40,40 @@ flowchart LR
     Router --> Gate["Deterministic command gate"]
     Gate --> Slash["Slash commands<br/>/new /add /list /show /raw<br/>/fix /delete /dedupe /help"]
     Gate --> Natural["Natural commands<br/>read, search, list, count<br/>correction, delete, numbered reference"]
-    Gate --> State["CONVERSATION_STATE<br/>result ids, page state, selection<br/>bare number resolves current list first<br/>pending action, pending delete"]
+    Gate --> State["CONVERSATION_STATE<br/>result ids, page state, selection<br/>bare number resolves current list first<br/>pending action, delete, batch split"]
     Gate --> Revision["NOTE_REVISION<br/>correction audit"]
 
-    Router --> Prep["Prepare note text<br/>strip prefix; explicit save forces create"]
-    Prep --> Capture["Batch-list capture - planned<br/>preserve one raw NOTE; detect sections and items"]
+    Gate -->|miss| Technical{"Technical note statement?"}
+    Technical -->|Yes| TechNote["Deterministic note metadata<br/>create without router model"]
+    Technical -->|No| Prep["Prepare note text<br/>strip prefix; explicit save forces create<br/>load search candidates plus last artifact"]
+    Prep --> Capture["Conservative batch-list capture<br/>preserve raw body; detect sections and items"]
     Capture --> Split{"Explicitly request<br/>separate notes?"}
     Split -->|No or ambiguous| OneNote["Keep one NOTE<br/>with structured list metadata"]
-    Split -->|Yes| ManyNotes["Create or propose<br/>separate notes per section"]
-    Prep --> AI["NVIDIA NIM<br/>route, analyze, vision"]
+    Split -->|Yes| BatchPreview["Save pending_action preview"]
+    BatchPreview --> ManyNotes["Approval creates one NOTE per item<br/>cancellation creates none"]
+    Capture -->|Not a list| AI["NVIDIA NIM<br/>route, analyze, vision"]
+    AI --> RouteGuard["Route safety normalization<br/>recover content or reasoning JSON<br/>validate append target<br/>task to create; question to agent<br/>single continuation to append"]
+    OneNote --> Manager
+    ManyNotes --> Manager
     Router --> Archive["ImageArchive"]
     Archive --> FileAPI["Telegram file API"]
 
     Router --> Manager["NoteManager"]
     Manager --> DB[("SQLite")]
     Archive --> DB
-    AI --> MetadataGuard["Generated metadata guard<br/>remove Han ideographs<br/>preserve only actionable schedule times"]
+    TechNote --> Manager
+    RouteGuard -->|create or append| MetadataGuard["Generated metadata guard<br/>remove Han ideographs<br/>demote past narrative time prefixes"]
+    RouteGuard -->|tool or general question| AgentReply["DB tool or agent fallback"]
+    RouteGuard -->|ignore| NoNote["Mark MESSAGE processed without NOTE"]
     MetadataGuard --> Manager
+    AgentReply --> Reply
+    NoNote --> Reply
 
     DB --> Message["MESSAGE<br/>received, processed, reply_failed"]
     DB --> Note["NOTE<br/>soft delete fields"]
     DB --> Image["IMAGE_FILE<br/>OCR text and classification"]
     DB --> Tags["TAG and NOTE_TAG"]
-    DB --> Items["NOTE_LIST_ITEM - planned<br/>section, text, completion state"]
+    DB --> Items["NOTE_LIST_ITEM<br/>section, text, position, completion state"]
     DB --> Merge["MERGE_PROPOSAL"]
 
     Router --> Reply["Best-effort result reply"]
@@ -129,16 +143,43 @@ sequenceDiagram
                 end
                 R->>D: Mark MESSAGE processed
                 R->>T: Best-effort result reply
+            else Explicit split request
+                R->>R: Parse list items without changing raw text
+                R->>D: Save pending_action batch_split preview
+                R->>T: Ask for approval
+                Note over R,D: Approval makes one NOTE per item; cancellation makes none
             else Command gate miss
-                R->>R: Reject meta commands from note persistence
-                R->>R: Strip explicit save prefix; set force-create flag
-                R->>D: Load 30-minute chat context and candidates
-                R->>M: Route and analyze text
-                M-->>R: create, append, ignore, or tool
-                R->>R: Explicit save stays create even if AI route is ignore
-                R->>R: Sanitize generated title, summary, tags, and AI answer
-                Note over R: Raw NOTE body and OCR text remain unchanged
-                R->>D: Persist NOTE or execute read-only tool
+                R->>R: Detect deterministic technical note statement
+                alt Technical statement
+                    R->>D: Create NOTE with deterministic metadata
+                else Non-technical input
+                    R->>R: Reject meta commands from note persistence
+                    R->>R: Strip explicit save prefix; set force-create flag
+                    R->>R: Conservatively detect multi-line list structure
+                    R->>D: Load 30-minute context, search candidates, and last artifact
+                    R->>M: Route text with bounded output
+                    M-->>R: JSON in content or reasoning output
+                    R->>R: Recover structured route and validate append target
+                    R->>R: Normalize task to create, question to agent, continuation to append
+                    Note over R,M: NIM failure uses the same heuristic route safety rules
+                    R->>R: Explicit save stays create even if AI route is ignore
+                    alt Create or append
+                        R->>M: Analyze note metadata
+                        M-->>R: Korean title, summary, tags
+                        R->>R: Remove Han and demote past narrative time prefixes
+                        Note over R: Raw NOTE body and OCR text remain unchanged
+                        R->>D: Persist NOTE and AI_ANALYSIS
+                        opt Multi-line list detected
+                            R->>D: Replace NOTE_LIST_ITEM rows transactionally
+                            Note over R,D: append, correction, and merge re-sync items
+                        end
+                    else General question or read-only tool
+                        R->>D: Query active notes when needed
+                        R->>M: Run agent fallback when needed
+                    else Ignore
+                        R->>D: Mark MESSAGE processed without NOTE
+                    end
+                end
                 R->>T: Best-effort result reply
             else Photo flow
                 R->>D: Insert IMAGE_FILE
@@ -256,7 +297,7 @@ erDiagram
         string chat_id PK
         string sender_id PK
         string key PK
-        text value_json "result ids, page state, selection, pending actions"
+        text value_json "list/search ids, last artifact, selection, pending actions"
         datetime updated_at
     }
 
@@ -279,11 +320,11 @@ erDiagram
         datetime created_at
     }
 
-    MESSAGE ||--o| NOTE : creates_or_updates
+    MESSAGE ||--o{ NOTE : creates_or_splits
     MESSAGE ||--o{ AI_ANALYSIS : analyzed_by
     MESSAGE ||--o{ IMAGE_FILE : archives
     NOTE ||--o{ NOTE_REVISION : revises
-    NOTE ||--o{ NOTE_LIST_ITEM : contains_planned
+    NOTE ||--o{ NOTE_LIST_ITEM : contains
     NOTE ||--o{ NOTE_TAG : labels
     TAG ||--o{ NOTE_TAG : belongs_to
     NOTE ||--o{ MERGE_PROPOSAL : keep_target
@@ -320,19 +361,26 @@ flowchart TD
     Resolve -->|Existing-note mutation| Preview["Save pending_action preview"]
     Resolve -->|New note| Create["Create NOTE"]
 
-    Gate -->|No command| Meta{"Meta command?"}
+    Gate -->|No command| Technical{"Technical note statement?"}
+    Technical -->|Yes| TechSave["Deterministic metadata<br/>create without router model"]
+    Technical -->|No| Meta{"Meta command?"}
     Meta -->|Yes| NoSave["Do not create or append"]
-    Meta -->|No| Prep["Strip explicit save prefix<br/>explicit save forces create<br/>load context and candidates"]
-    Prep --> Batch{"Multi-line list capture? - planned"}
+    Meta -->|No| Prep["Strip explicit save prefix<br/>explicit save forces create<br/>load context, search candidates, and last artifact"]
+    Prep --> Batch{"Conservative multi-line list capture?"}
     Batch -->|No| Agent["AI router and tools"]
     Batch -->|Yes| Structure["Preserve raw body in one NOTE<br/>detect sections and checklist items"]
     Structure --> Split{"Explicitly asks to split<br/>into separate notes?"}
     Split -->|No or ambiguous| ListNote["Create one list NOTE<br/>save item metadata for future tools"]
-    Split -->|Yes| SplitNotes["Create or propose notes<br/>per section"]
-    Agent --> AgentAction{"AI action"}
-    AgentAction -->|Create, append, or explicit save| Metadata["Validate generated metadata<br/>remove Han ideographs<br/>keep actionable schedule times only"]
+    Split -->|Yes| SplitPreview["Save pending_action preview"]
+    SplitPreview --> SplitConfirm{"User approves?"}
+    SplitConfirm -->|Yes| SplitNotes["Create one NOTE per item<br/>using one bounded metadata call"]
+    SplitConfirm -->|No| CancelSplit["Create no NOTE; keep raw MESSAGE"]
+    Agent --> Parse["Recover structured JSON<br/>from content or reasoning output"]
+    Parse --> AgentAction{"Validate and normalize action<br/>task-like statement to create<br/>general question to agent fallback<br/>single recent continuation to append"}
+    AgentAction -->|Create, append, or explicit save| Metadata["Validate generated metadata<br/>remove Han ideographs<br/>demote past narrative time prefixes"]
     Metadata --> Save["Persist NOTE and AI_ANALYSIS<br/>raw body unchanged"]
-    AgentAction -->|Read-only tool| Tool["Query active notes, tags, merge candidates"]
+    TechSave --> Save
+    AgentAction -->|Read-only tool or general question| Tool["Query active notes or run agent fallback"]
     AgentAction -->|Ignore without explicit save| Ignore["Mark MESSAGE processed"]
 
     Input -->|Photo| Image["Archive IMAGE_FILE"]
@@ -362,6 +410,7 @@ flowchart TD
     Tool --> Reply
     ListNote --> Reply
     SplitNotes --> Reply
+    CancelSplit --> Reply
     Ignore --> Reply
     Reuse --> Reply
     ImageNote --> Reply

@@ -79,7 +79,7 @@ class NvidiaNIMProvider:
         payload = {
             "model": self.router_model,
             "temperature": 0.0,
-            "max_tokens": 220,
+            "max_tokens": min(self.max_tokens, 800),
             "messages": [
                 {
                     "role": "system",
@@ -93,6 +93,7 @@ class NvidiaNIMProvider:
                         "Use append only when the text clearly belongs to one of the candidate notes. "
                         "If append is chosen, target_note_id must be one of the candidate note_id values. "
                         "For tools, available tool_name values are count_notes, recent_notes, list_tags, count_notes_by_tag, notes_by_tag, search_notes, suggest_note_merge, agent_fallback. "
+                        "A short task-like phrase ending in 확인, 준비, 만들기, or 하기 is a note to create unless it explicitly asks about existing notes. "
                         "Keep reason very short, like 'development log' or 'note query'."
                     ),
                 },
@@ -130,17 +131,90 @@ class NvidiaNIMProvider:
                 "agent_fallback",
             }:
                 tool_name = None
-            target_note_id = str(parsed.get("target_note_id", "")).strip() or None
+            target_value = parsed.get("target_note_id")
+            target_note_id = str(target_value).strip() or None if target_value is not None else None
             confidence = self._coerce_confidence(parsed.get("confidence"))
-            reason = str(parsed.get("reason", "")).strip()
-            tool_query = str(parsed.get("tool_query", "")).strip() or None
-            tool_tag = str(parsed.get("tool_tag", "")).strip() or None
+            reason_value = parsed.get("reason")
+            reason = str(reason_value).strip() if reason_value is not None else ""
+            tool_query_value = parsed.get("tool_query")
+            tool_query = str(tool_query_value).strip() or None if tool_query_value is not None else None
+            tool_tag_value = parsed.get("tool_tag")
+            tool_tag = str(tool_tag_value).strip() or None if tool_tag_value is not None else None
             try:
                 tool_limit = int(parsed.get("tool_limit")) if parsed.get("tool_limit") is not None else None
             except (TypeError, ValueError):
                 tool_limit = None
             if tool_limit is not None:
                 tool_limit = max(1, min(tool_limit, 10))
+
+            normalized_text = " ".join(text.strip().lower().split())
+            query_markers = (
+                "알려줘",
+                "보여줘",
+                "찾아줘",
+                "검색",
+                "몇 개",
+                "몇개",
+                "뭐 있",
+                "뭐있",
+                "원문",
+                "목록",
+            )
+            weather_markers = ("날씨", "기온", "비 와", "비와", "눈 와", "눈와")
+            asks_supported_query = any(marker in normalized_text for marker in query_markers)
+            asks_weather = any(marker in normalized_text for marker in weather_markers)
+            asks_general_question = self._looks_like_general_question(normalized_text)
+            continuation_statement = re.match(
+                r"^(?:그리고|추가로|또|이어서|거기에)(?:\s|$)",
+                normalized_text,
+            ) is not None
+            explicitly_blocks_save = (
+                "저장하지 마" in normalized_text
+                or "저장하지말" in normalized_text
+            )
+            if asks_weather:
+                route = "ignore"
+                tool_name = None
+                tool_query = None
+                reason = reason or "unsupported weather query"
+            elif asks_general_question and not explicitly_blocks_save:
+                route = "tool"
+                tool_name = "agent_fallback"
+                tool_query = text
+                reason = "general question"
+            elif (
+                route in {"ignore", "tool"}
+                and self._looks_like_note_worthy_text(text)
+                and not asks_supported_query
+                and not explicitly_blocks_save
+            ):
+                route = "create"
+                tool_name = None
+                tool_query = None
+                reason = "note-like statement"
+
+            if (
+                route in {"create", "append"}
+                and continuation_statement
+                and conversation_context
+                and len(candidate_notes) == 1
+            ):
+                route = "append"
+                target_note_id = str(candidate_notes[0].get("id", "")).strip() or None
+
+            valid_candidate_ids = {
+                str(note.get("id", "")).strip()
+                for note in candidate_notes
+                if str(note.get("id", "")).strip()
+            }
+            if route == "append":
+                if target_note_id not in valid_candidate_ids:
+                    target_note_id = self._guess_append_target(candidate_notes, normalized_text)
+                if target_note_id is None:
+                    route = "create"
+            else:
+                target_note_id = None
+
             return RouteDecision(
                 route=route,
                 confidence=confidence,
@@ -242,6 +316,7 @@ class NvidiaNIMProvider:
             source_text=text,
             fallback_category="note",
         )
+        self._remove_narrative_time_prefix(result, source_text=text)
         result.action = action
         result.target_note_id = target_note_id
         result.is_note = True
@@ -250,6 +325,46 @@ class NvidiaNIMProvider:
         result.tool_tag = None
         result.tool_limit = None
         return result
+
+    @staticmethod
+    def _remove_narrative_time_prefix(
+        result: TextAnalysisResult,
+        *,
+        source_text: str,
+    ) -> None:
+        time_match = re.search(
+            r"(?P<period>오전|오후)?\s*(?P<hour>\d{1,2})\s*시"
+            r"(?:\s*(?P<minute>\d{1,2})\s*분)?\s*까지",
+            source_text,
+        )
+        if time_match is None:
+            return
+
+        source_window = source_text[
+            max(0, time_match.start() - 20):time_match.end() + 100
+        ]
+        narrative_markers = (
+            "기다렸",
+            "기다린",
+            "연락이 없",
+            "연락이 늦",
+            "약속이 취소",
+            "취소되어",
+            "취소돼",
+        )
+        if not any(marker in source_window for marker in narrative_markers):
+            return
+
+        period = time_match.group("period")
+        minute = time_match.group("minute")
+        period_pattern = rf"{re.escape(period)}\s*" if period else r"(?:오전|오후)?\s*"
+        minute_pattern = rf"\s*{minute}\s*분" if minute else ""
+        prefix_pattern = re.compile(
+            rf"^\s*{period_pattern}{time_match.group('hour')}\s*시"
+            rf"{minute_pattern}\s*까지\s*(?:[-:：]\s*)?"
+        )
+        result.title = prefix_pattern.sub("", result.title).strip() or result.title
+        result.summary = prefix_pattern.sub("", result.summary).strip() or result.summary
 
     def analyze_image(self, image_path: str, caption: str | None = None) -> TextAnalysisResult:
         image_data_url = self._build_data_url(image_path)
@@ -566,6 +681,14 @@ class NvidiaNIMProvider:
             return RouteDecision(route="ignore", confidence=0.1, reason="empty")
         if "저장하지 마" in text or "저장하지말" in normalized:
             return RouteDecision(route="ignore", confidence=0.99, reason="explicit do not save")
+        if self._looks_like_general_question(normalized):
+            return RouteDecision(
+                route="tool",
+                confidence=0.7,
+                reason="general question fallback",
+                tool_name="agent_fallback",
+                tool_query=text,
+            )
         if self._looks_like_contextual_followup(normalized, conversation_context):
             return RouteDecision(
                 route="tool",
@@ -576,6 +699,11 @@ class NvidiaNIMProvider:
             )
         if self._looks_like_note_worthy_text(text):
             target_note_id = self._guess_append_target(candidate_notes, normalized)
+            if target_note_id is None and len(candidate_notes) == 1 and re.match(
+                r"^(?:그리고|추가로|또|이어서|거기에)(?:\s|$)",
+                normalized,
+            ):
+                target_note_id = str(candidate_notes[0].get("id", "")).strip() or None
             return RouteDecision(
                 route="append" if target_note_id else "create",
                 confidence=0.65,
@@ -743,19 +871,36 @@ class NvidiaNIMProvider:
 
     @classmethod
     def _parse_json_message(cls, data: dict[str, Any], *, error_prefix: str) -> dict[str, Any]:
-        content = cls._extract_message_text(data)
-        stripped = cls._strip_code_fences(content)
-        candidate = cls._extract_json_candidate(stripped) or stripped
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError as exc:
-            raise NIMProviderError(
-                f"{error_prefix}: {json.dumps(data, ensure_ascii=False)[:500]}"
-            ) from exc
-        if not isinstance(parsed, dict):
-            raise NIMProviderError(f"{error_prefix}: response was not a JSON object")
-        return parsed
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise NIMProviderError(f"{error_prefix}: response had no choices")
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            raise NIMProviderError(f"{error_prefix}: response had no message")
 
+        fallback_objects: list[dict[str, Any]] = []
+        for field in ("content", "output_text", "text", "reasoning_content"):
+            content = cls._normalize_message_content(message.get(field))
+            if not content:
+                continue
+            stripped = cls._strip_code_fences(content)
+            candidate = cls._extract_json_candidate(stripped) or stripped
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            if "route" in parsed or "action" in parsed:
+                return parsed
+            if any(str(key).strip() and value not in (None, "", [], {}) for key, value in parsed.items()):
+                fallback_objects.append(parsed)
+
+        if fallback_objects:
+            return fallback_objects[0]
+        raise NIMProviderError(
+            f"{error_prefix}: {json.dumps(data, ensure_ascii=False)[:500]}"
+        )
     @staticmethod
     def _normalize_message_content(content: Any) -> str:
         if isinstance(content, str):
@@ -934,7 +1079,7 @@ class NvidiaNIMProvider:
     @staticmethod
     def _looks_like_note_worthy_text(text: str) -> bool:
         normalized = " ".join(text.strip().lower().split())
-        if len(normalized) < 8:
+        if len(normalized) < 4:
             return False
         note_keywords = (
             "로그",
@@ -969,8 +1114,36 @@ class NvidiaNIMProvider:
             "정했다",
             "붙인다",
             "남기기로 했다",
+            "하기",
+            "만들기",
+            "확인",
+            "준비",
+            "구매",
+            "읽기",
+            "보내기",
+            "시작하기",
+            "공부하기",
+            "제출하기",
+            "예약",
+            "알아보기",
         )
         return any(ending in normalized for ending in note_endings)
+
+    @staticmethod
+    def _looks_like_general_question(normalized: str) -> bool:
+        if any(
+            marker in normalized
+            for marker in ("알려줘", "보여줘", "찾아줘", "검색", "뭐 있", "뭐있", "원문", "목록")
+        ):
+            return False
+        if any(marker in normalized for marker in ("날씨", "기온", "비 와", "비와", "눈 와", "눈와")):
+            return False
+        question_body = normalized.rstrip("?？").strip()
+        question_words = ("뭐", "무엇", "어떻게", "어때", "왜", "언제", "어디", "누구", "몇")
+        return (
+            any(marker in question_body for marker in question_words)
+            and question_body.endswith(("까", "지", "어때", "인가", "맞아"))
+        )
 
     @staticmethod
     def _looks_like_contextual_followup(normalized: str, conversation_context: list[dict[str, Any]]) -> bool:
