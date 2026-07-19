@@ -881,6 +881,11 @@ class UpdateRouter:
         if list_mode is not None:
             return CommandIntent(name="recent_notes", query=list_mode)
 
+        if self._looks_like_batch_storage_status_request(normalized):
+            return CommandIntent(name="batch_storage_status")
+
+        if self._looks_like_batch_items_read_request(normalized):
+            return CommandIntent(name="read_list_items")
         if self._looks_like_numbered_select_request(normalized):
             return CommandIntent(name="select_note")
 
@@ -951,6 +956,25 @@ class UpdateRouter:
             )
             return True
 
+        if command.name == "read_list_items":
+            self._clear_correction_state(chat_id=str(chat_id), sender_id=sender_id)
+            self._handle_list_items_read(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                text=text,
+            )
+            return True
+
+        if command.name == "batch_storage_status":
+            self._clear_correction_state(chat_id=str(chat_id), sender_id=sender_id)
+            self._handle_batch_storage_status(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                text=text,
+            )
+            return True
         if command.name == "select_note":
             return self._handle_note_selection(
                 message_id=message_id,
@@ -3130,7 +3154,10 @@ class UpdateRouter:
         elif summary:
             message += f"\n\n\uc694\uc57d: {summary}"
         if list_item_count:
-            message += f"\n\n묶음 메모로 인식한 항목: {list_item_count}개"
+            message += (
+                f"\n\n이 메시지는 원문 메모 1개로 저장했고, "
+                f"목록 항목 {list_item_count}개를 연결해 뒀어."
+            )
         if notion_status == "exported":
             message += "\nNotion: \uc800\uc7a5\ud568"
         elif notion_status == "failed":
@@ -4260,6 +4287,31 @@ class UpdateRouter:
             message += "\nNotion: \uc804\uc1a1 \uc2e4\ud328"
         return message
 
+    @staticmethod
+    def _looks_like_batch_items_read_request(normalized: str) -> bool:
+        has_items = "항목" in normalized
+        has_referenced_count = bool(
+            re.search(r"(?:그|이|저|방금)\s*메모\s*\d+\s*개", normalized)
+        )
+        has_read_request = any(
+            token in normalized
+            for token in ("내용", "전부", "모두", "목록", "알려줘", "보여줘")
+        )
+        return (has_items or has_referenced_count) and has_read_request
+
+    @staticmethod
+    def _looks_like_batch_storage_status_request(normalized: str) -> bool:
+        has_storage_phrase = any(
+            phrase in normalized
+            for phrase in ("하나로 저장", "한 메모로 저장", "전부 하나", "모두 하나")
+        )
+        has_reference_or_question = (
+            any(hint in normalized for hint in FAST_READ_REFERENCE_HINTS)
+            or normalized.endswith(("거니", "거야", "맞아", "인가", "인가요"))
+            or normalized.startswith("그럼")
+        )
+        return has_storage_phrase and has_reference_or_question
+
     @classmethod
     def _detect_fast_read_intent(cls, text: str | None) -> str | None:
         if not text:
@@ -4350,6 +4402,113 @@ class UpdateRouter:
             note.get("id"),
             source_content_type or "unknown",
         )
+
+    def _handle_list_items_read(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        text: str,
+    ) -> None:
+        resolved = self._resolve_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            text=text,
+            prefer_image=True,
+        )
+        note = resolved.get("note")
+        candidates = resolved.get("candidates") or []
+        self.note_manager.mark_processed(message_id)
+
+        if candidates:
+            self._send_result_message(
+                message_id,
+                chat_id,
+                self._build_reference_choice_message(action_label="목록 항목 조회", notes=candidates),
+                purpose="list_items_reference_choice",
+            )
+            return
+        if not isinstance(note, dict):
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "목록 항목을 확인할 최근 메모를 찾지 못했어.",
+                purpose="list_items_missing",
+            )
+            return
+
+        items = self.note_manager.get_note_list_items(str(note.get("id")))
+        self._remember_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            note_id=str(note.get("id")),
+        )
+        if not items:
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "이 메모에는 별도로 추출된 목록 항목이 없어. 원문 메모 1개로 저장돼 있어.",
+                purpose="list_items_empty",
+            )
+            return
+
+        lines = [
+            f"이 메모는 원문 메모 1개로 저장돼 있고, 목록 항목 {len(items)}개가 연결돼 있어."
+        ]
+        for index, item in enumerate(items, start=1):
+            body = str(item.get("body") or "").strip()
+            if body:
+                lines.append(f"{index}. {body}")
+        lines.append("")
+        lines.append("각 항목은 아직 독립 메모가 아니야. 나눠 저장하려면 원문 목록과 함께 '각각 저장해줘:'라고 보내줘.")
+        self._send_result_message(
+            message_id,
+            chat_id,
+            "\n".join(lines),
+            purpose="read_list_items",
+        )
+
+    def _handle_batch_storage_status(
+        self,
+        *,
+        message_id: str,
+        chat_id: int | str,
+        sender_id: str,
+        text: str,
+    ) -> None:
+        resolved = self._resolve_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            text=text,
+            prefer_image=True,
+        )
+        note = resolved.get("note")
+        self.note_manager.mark_processed(message_id)
+        if not isinstance(note, dict):
+            self._send_result_message(
+                message_id,
+                chat_id,
+                "저장 구조를 확인할 최근 메모를 찾지 못했어.",
+                purpose="batch_status_missing",
+            )
+            return
+
+        items = self.note_manager.get_note_list_items(str(note.get("id")))
+        self._remember_note_reference(
+            chat_id=str(chat_id),
+            sender_id=sender_id,
+            note_id=str(note.get("id")),
+        )
+        if items:
+            reply = (
+                f"응. 원문 전체는 메모 1개로 저장됐고, 그 안에서 목록 항목 {len(items)}개를 따로 연결해 둔 상태야.\n\n"
+                "줄바꿈만으로 자동 분리하면 한 메모의 문단도 잘못 쪼갤 수 있어서 기본값은 이렇게 보존해. "
+                "각 항목을 독립 메모로 만들고 싶으면 원문 목록과 함께 '각각 저장해줘:'라고 보내줘."
+            )
+        else:
+            reply = "응. 이 메시지는 목록 항목 없이 원문 메모 1개로 저장됐어."
+        self._send_result_message(message_id, chat_id, reply, purpose="batch_storage_status")
 
     @staticmethod
     def _looks_like_markdown_table(text: str) -> bool:

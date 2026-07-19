@@ -15,6 +15,36 @@ Telegram webhook based personal note agent.
 - Sync OCR correction into both `NOTE.body` and `IMAGE_FILE.ocr_text`
 - Use NVIDIA NIM only after command-gate miss for save/append/tool/fallback workflows
 
+## Handoff: Multi-Line Batch Notes
+
+Current behavior is intentionally conservative. A multi-line message is saved as one raw NOTE so wrapped paragraphs and related thoughts are never split accidentally. When the parser confidently sees list-like lines, it also creates linked NOTE_LIST_ITEM rows; these are structured items inside the parent note, not independent notes.
+
+- A normal multi-line capture or /new creates one NOTE and zero or more NOTE_LIST_ITEM rows.
+- A response such as "이 메시지는 원문 메모 1개로 저장했고, 목록 항목 9개를 연결해 뒀어." means one parent note and nine linked list items.
+- "그 메모 9개 내용 전부 알려줘" and "그 메모 항목 전부 보여줘" are deterministic DB-only item reads. They must not call NIM or create/append a note.
+- "그럼 전부 하나로 저장된 거니?" is a deterministic DB-only storage-structure explanation, not an AI fallback.
+- To create independent notes, the currently supported flow is an explicit split request with the original list, for example "각각 저장해줘:" followed by the lines. The bot previews the split and waits for approval.
+
+Current gap: a previously saved parent list note cannot yet be split into independent notes only by referring to it (for example, "방금 메모를 각각 분리해줘"). The original list must currently be included with an explicit split request.
+
+### Test Policy
+
+- Do not automatically send live Telegram messages or call NIM for routine validation. These consume external quota and are only run when explicitly requested.
+- Local pytest uses fake Telegram/NIM clients unless a test is deliberately configured otherwise. Report it as automated local verification, never as live Telegram verification.
+- Maintain a curated set of manual Telegram prompt/expectation pairs in a dedicated test-cases document before expanding real-user testing.
+- Current automated status after the batch-item change: 117 passed. No live Telegram retest was run for this change.
+
+Suggested manual prompts for this flow:
+
+~~~text
+다이소 안경닦이
+다이소 택배박스(뽁뽁이)
+잠실 피자
+
+그 메모 3개 내용 전부 알려줘
+그럼 전부 하나로 저장된 거니?
+~~~
+
 ## Command UX Direction
 
 Slash commands are the current prototype interface, not the final product shape.

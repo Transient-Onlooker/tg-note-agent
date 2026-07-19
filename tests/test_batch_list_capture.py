@@ -116,7 +116,8 @@ def test_multiline_batch_forces_one_note_even_when_router_ignores(tmp_path: Path
     assert len(db.get_note_list_items(notes[0]["id"])) == 9
     assert provider.route_calls == 1
     assert provider.analysis_calls == 1
-    assert "\ubb36\uc74c \uba54\ubaa8\ub85c \uc778\uc2dd\ud55c \ud56d\ubaa9: 9\uac1c" in telegram.messages[-1]["text"]
+    assert "원문 메모 1개" in telegram.messages[-1]["text"]
+    assert "목록 항목 9개" in telegram.messages[-1]["text"]
 
 
 def test_batch_route_tool_cannot_bypass_note_persistence(tmp_path: Path, monkeypatch) -> None:
@@ -228,3 +229,35 @@ def test_list_items_resync_after_correction_and_merge(tmp_path: Path, monkeypatc
 def test_explicit_split_extractor_requires_a_split_command() -> None:
     assert extract_explicit_batch_split("\uac01\uac01 \uc800\uc7a5\ud574\uc918:\n" + BATCH_TEXT) == BATCH_TEXT
     assert extract_explicit_batch_split(BATCH_TEXT) is None
+
+def test_batch_item_queries_explain_one_note_and_list_items_without_llm(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    provider = BatchNIMProvider()
+    client, db, telegram = build_client(tmp_path, provider)
+
+    _post_text(client, message_id=3010, text=BATCH_TEXT)
+    route_calls = provider.route_calls
+    analysis_calls = provider.analysis_calls
+
+    response = _post_text(client, message_id=3011, text="그 메모 9개 내용 전부 알려줘")
+
+    assert response.status_code == 200
+    reply = telegram.messages[-1]["text"]
+    assert "원문 메모 1개" in reply
+    assert "목록 항목 9개" in reply
+    assert "1. 다이소 안경닦이" in reply
+    assert "9. 미적분 숙제 하기" in reply
+    assert provider.route_calls == route_calls
+    assert provider.analysis_calls == analysis_calls
+    assert len(db.fetch_all("NOTE")) == 1
+
+    response = _post_text(client, message_id=3012, text="그럼 전부 하나로 저장된거니")
+
+    assert response.status_code == 200
+    assert "메모 1개" in telegram.messages[-1]["text"]
+    assert "목록 항목 9개" in telegram.messages[-1]["text"]
+    assert provider.route_calls == route_calls
+    assert provider.analysis_calls == analysis_calls
