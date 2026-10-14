@@ -1,5 +1,7 @@
 # Roadmap
 
+> **프로토타입 개발 당시 계획 및 이력입니다.** 현재 TypeScript/Cloudflare 기반 [NoteRelay](https://github.com/Transient-Onlooker/tg-note-agent-web)의 최신 계획이나 기능 상태를 의미하지 않습니다. 이 저장소 자체의 구현 범위는 [루트 README](../README.md)를 참고하세요.
+
 Base date: `2026-07-03`
 
 This is a short working roadmap for the current Telegram-first note agent.
