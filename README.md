@@ -2,6 +2,19 @@
 
 Telegram webhook based personal note agent.
 
+> **프로젝트 위치:** 이 저장소는 **FastAPI + SQLite + NVIDIA NIM 기반 개인 노트 에이전트 프로토타입**입니다. 현재 웹 Workspace를 갖춘 [NoteRelay](https://github.com/Transient-Onlooker/tg-note-agent-web)는 별도의 TypeScript/Cloudflare 기반 프로젝트이며, 저장소와 데이터 모델이 동일한 제품으로 자동 연결되는 것은 아닙니다.
+
+## 설계 핵심
+
+- Telegram 입력 원문을 보존하고, 명령어 처리와 AI 분석을 분리합니다.
+- 조회·수정·삭제의 명확한 요청은 deterministic command gate에서 먼저 처리합니다.
+- 기존 기록의 변경·삭제는 미리보기와 승인 단계를 거칩니다.
+- Telegram 응답 실패가 성공한 원본 저장을 되돌리지 않도록 설계합니다.
+
+[구조 설명](docs/ARCHITECTURE.md) · [명령어](docs/COMMANDS.md) · [개발 계획(역사적 기록)](docs/ROADMAP.md)
+
+> 아래 Handoff와 Current Issues는 이 프로토타입의 작업 시점 기록입니다. 최신 NoteRelay 웹 버전의 기능 목록이나 운영 상태를 뜻하지 않습니다.
+
 ## Current scope
 
 - Accept Telegram text updates through `/webhook/telegram`
